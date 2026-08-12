@@ -6,10 +6,10 @@ namespace VideoStream
     {
         public static IUnityVideoEncoder Create(VideoStreamConfig config)
         {
-#if UNITY_ANDROID
+#if UNITY_ANDROID && !UNITY_EDITOR
             return new AndroidMediaCodecEncoder();
 #else
-            Debug.LogWarning("[VideoStream] UDP streamer currently requires an Android build. Editor/desktop play mode is not encoded.");
+            Debug.Log("[VideoStream] Streaming requires an Android build; disabled in editor/desktop.");
             return null;
 #endif
         }

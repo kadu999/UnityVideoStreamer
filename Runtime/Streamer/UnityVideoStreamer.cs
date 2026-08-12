@@ -86,6 +86,11 @@ namespace VideoStream
             lock (_stateLock)
             {
                 if (_streaming) return;
+                if (Application.isEditor)
+                {
+                    Debug.Log("[VideoStream] Streaming is disabled in the Unity Editor; build to Android to run the encoder.");
+                    return;
+                }
 
                 if (captureCamera == null)
                 {
