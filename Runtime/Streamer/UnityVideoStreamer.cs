@@ -40,6 +40,31 @@ namespace VideoStream
 
         public bool IsStreaming => _streaming;
         public string MimeType => useHevc ? "video/hevc" : "video/avc";
+        public Camera CaptureCamera
+        {
+            get => captureCamera;
+            set => captureCamera = value;
+        }
+        public string TargetAddress
+        {
+            get => targetAddress;
+            set => targetAddress = value;
+        }
+        public int TargetPort
+        {
+            get => targetPort;
+            set => targetPort = value;
+        }
+        public bool AutoDiscovery
+        {
+            get => autoDiscovery;
+            set => autoDiscovery = value;
+        }
+        public bool AutoStart
+        {
+            get => autoStart;
+            set => autoStart = value;
+        }
 
         void OnEnable()
         {
