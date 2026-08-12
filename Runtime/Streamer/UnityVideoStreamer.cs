@@ -1,7 +1,6 @@
 using System;
 using System.Collections;
 using System.Net;
-using System.Threading;
 using UnityEngine;
 
 namespace VideoStream
@@ -36,7 +35,6 @@ namespace VideoStream
         FramePacketizer _packetizer;
         Coroutine _captureCoroutine;
         volatile bool _streaming;
-        long _encodedFrameLogCount;
 
         public event Action<string> OnError;
 
@@ -189,6 +187,7 @@ namespace VideoStream
                     return;
                 }
 
+                _capture.FrameReady += HandleFrameReady;
                 _packetizer = new FramePacketizer();
                 _streaming = true;
                 _captureCoroutine = StartCoroutine(CaptureLoop());
@@ -220,6 +219,7 @@ namespace VideoStream
         {
             if (_capture != null)
             {
+                _capture.FrameReady -= HandleFrameReady;
                 _capture.Dispose();
                 _capture = null;
             }
@@ -257,22 +257,19 @@ namespace VideoStream
                 yield return new WaitForEndOfFrame();
                 if (_streaming && _capture != null)
                 {
-                    _capture.RenderFrameToEncoder(_encoder);
+                    _capture.CaptureFrame(NowUs());
                 }
             }
+        }
+
+        void HandleFrameReady(byte[] rgba, int frameWidth, int frameHeight, long ptsUs, bool flip)
+        {
+            _encoder?.PushFrame(rgba, frameWidth, frameHeight, ptsUs);
         }
 
         void HandleFrameEncoded(EncodedFrame frame)
         {
             if (_sender == null || _packetizer == null) return;
-
-            var encodedCount = Interlocked.Increment(ref _encodedFrameLogCount);
-            if (encodedCount <= 5 || encodedCount % 60 == 0)
-            {
-                Debug.Log("[VideoStream] Encoded frame count=" + encodedCount +
-                          " key=" + frame.IsKeyFrame +
-                          " bytes=" + frame.Data.Length);
-            }
 
             var packet = _packetizer.Pack(frame);
             _sender.SendFrame(packet, frame.IsKeyFrame || frame.IsConfig);
@@ -321,6 +318,15 @@ namespace VideoStream
         {
             Debug.LogError("[VideoStream] " + message);
             OnError?.Invoke(message);
+        }
+
+        static long NowUs()
+        {
+#if UNITY_2022_2_OR_NEWER
+            return (long)(Time.realtimeSinceStartupAsDouble * 1_000_000d);
+#else
+            return (long)(Time.realtimeSinceStartup * 1_000_000d);
+#endif
         }
 
         void Reset()

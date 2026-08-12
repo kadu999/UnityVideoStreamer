@@ -27,6 +27,7 @@ namespace VideoStream
                     _proxy = new JavaCallbackProxy(this);
                     _javaEncoder = new AndroidJavaObject("com.videostream.stream.VideoStreamEncoder");
                     _javaEncoder.Call("setCallback", _proxy);
+                    _javaEncoder.Call("setFlipY", config.FlipY);
 
                     var ok = _javaEncoder.Call<bool>(
                         "open",
@@ -45,9 +46,6 @@ namespace VideoStream
                     }
 
                     _running = true;
-#if UNITY_ANDROID && !UNITY_EDITOR
-                    VideoStreamNative.SetActive(1);
-#endif
                     Debug.Log($"[VideoStream] Android encoder started: {config.Width}x{config.Height} {config.FrameRate}fps {config.MimeType}");
                     return true;
                 }
@@ -60,13 +58,19 @@ namespace VideoStream
             }
         }
 
-        public void RenderFrame(IntPtr nativeTexturePtr, int width, int height, bool flipY)
+        public void PushFrame(byte[] rgba, int width, int height, long ptsUs)
         {
-#if UNITY_ANDROID && !UNITY_EDITOR
-            if (!_running) return;
-            VideoStreamNative.SetFrameInfo(nativeTexturePtr, width, height, flipY ? 1 : 0);
-            GL.IssuePluginEvent(VideoStreamNative.GetRenderEventFunc(), VideoStreamNative.GetRenderEventId());
-#endif
+            var encoder = _javaEncoder;
+            if (!_running || encoder == null) return;
+
+            try
+            {
+                encoder.Call("pushFrame", rgba, width, height, ptsUs);
+            }
+            catch (Exception ex)
+            {
+                Error?.Invoke("Push frame failed: " + ex.Message);
+            }
         }
 
         public void RequestKeyFrame()
@@ -84,9 +88,6 @@ namespace VideoStream
             {
                 if (!_running && _javaEncoder == null) return;
                 _running = false;
-#if UNITY_ANDROID && !UNITY_EDITOR
-                VideoStreamNative.SetActive(0);
-#endif
                 DisposeJava();
             }
         }

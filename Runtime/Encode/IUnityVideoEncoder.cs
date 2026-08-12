@@ -9,7 +9,7 @@ namespace VideoStream
         event Action<string> Error;
 
         bool Start(VideoStreamConfig config);
-        void RenderFrame(IntPtr nativeTexturePtr, int width, int height, bool flipY);
+        void PushFrame(byte[] rgba, int width, int height, long ptsUs);
         void RequestKeyFrame();
         void Stop();
     }
