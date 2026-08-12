@@ -65,7 +65,7 @@ namespace VideoStream
 
             try
             {
-                encoder.Call("pushFrame", rgba, width, height, ptsUs);
+                encoder.Call<bool>("pushFrame", rgba, width, height, ptsUs);
             }
             catch (Exception ex)
             {
