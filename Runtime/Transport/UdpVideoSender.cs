@@ -5,6 +5,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
+using UnityEngine;
 
 namespace VideoStream
 {
@@ -21,6 +22,7 @@ namespace VideoStream
         volatile bool _disposed;
         int _sequence;
         int _localPort;
+        long _sentDatagrams;
         readonly byte[] _receiveBuffer = new byte[4096];
         EndPoint _remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
 
@@ -146,6 +148,11 @@ namespace VideoStream
                     try
                     {
                         _socket?.SendTo(datagram, datagram.Length, SocketFlags.None, target);
+                        var sent = Interlocked.Increment(ref _sentDatagrams);
+                        if (sent <= 5 || sent % 60 == 0)
+                        {
+                            UnityEngine.Debug.Log("[VideoStream] UDP datagrams sent=" + sent);
+                        }
                     }
                     catch (Exception ex)
                     {

@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Net;
+using System.Threading;
 using UnityEngine;
 
 namespace VideoStream
@@ -35,6 +36,7 @@ namespace VideoStream
         FramePacketizer _packetizer;
         Coroutine _captureCoroutine;
         volatile bool _streaming;
+        long _encodedFrameLogCount;
 
         public event Action<string> OnError;
 
@@ -257,6 +259,14 @@ namespace VideoStream
         void HandleFrameEncoded(EncodedFrame frame)
         {
             if (_sender == null || _packetizer == null) return;
+
+            var encodedCount = Interlocked.Increment(ref _encodedFrameLogCount);
+            if (encodedCount <= 5 || encodedCount % 60 == 0)
+            {
+                Debug.Log("[VideoStream] Encoded frame count=" + encodedCount +
+                          " key=" + frame.IsKeyFrame +
+                          " bytes=" + frame.Data.Length);
+            }
 
             var packet = _packetizer.Pack(frame);
             _sender.SendFrame(packet, frame.IsKeyFrame || frame.IsConfig);

@@ -31,6 +31,7 @@ public class VideoStreamEncoder {
     private volatile boolean forceKeyFrame = false;
     private Thread worker;
     private byte[] csd;
+    private int encodedFrameCount;
 
     public void setCallback(VideoStreamCallback cb) {
         this.callback = cb;
@@ -210,6 +211,15 @@ public class VideoStreamEncoder {
     }
 
     private void fire(byte[] data, long ptsUs, boolean config, boolean keyFrame) {
+        encodedFrameCount++;
+        if (config || keyFrame || encodedFrameCount % 30 == 0) {
+            android.util.Log.i(
+                    "VideoStreamEncoder",
+                    "encoded config=" + config +
+                    " key=" + keyFrame +
+                    " bytes=" + data.length +
+                    " count=" + encodedFrameCount);
+        }
         try {
             if (callback != null) {
                 callback.onEncodedFrame(data, 0, data.length, ptsUs, config, keyFrame, mime);

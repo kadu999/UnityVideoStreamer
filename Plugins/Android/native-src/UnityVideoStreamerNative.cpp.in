@@ -42,6 +42,7 @@ static std::atomic<uintptr_t> g_textureId(0);
 static std::atomic<int> g_frameWidth(0);
 static std::atomic<int> g_frameHeight(0);
 static std::atomic<int> g_frameFlipY(1);
+static int g_renderedFrames = 0;
 
 static const char* EglErrorString(EGLint error)
 {
@@ -259,6 +260,15 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
     if (!swapped)
     {
         LogEglError("eglSwapBuffers");
+    }
+    else
+    {
+        g_renderedFrames++;
+        if (g_renderedFrames <= 5 || g_renderedFrames % 60 == 0)
+        {
+            LOGI("Rendered frame %d (%dx%d flip=%d)",
+                 g_renderedFrames, width, height, flipY);
+        }
     }
 
     if (!eglMakeCurrent(unityDisplay, unityDraw, unityRead, unityContext))
