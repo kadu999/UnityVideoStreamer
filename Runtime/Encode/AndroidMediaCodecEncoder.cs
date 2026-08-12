@@ -132,7 +132,7 @@ namespace VideoStream
         }
 
         void onEncodedFrame(
-            AndroidJavaObject jData,
+            sbyte[] data,
             int offset,
             int length,
             long ptsUs,
@@ -141,17 +141,11 @@ namespace VideoStream
             string mime
         )
         {
-            if (jData == null || length <= 0) return;
+            if (data == null || length <= 0 || offset < 0 || offset + length > data.Length) return;
 
-            var data = AndroidJNIHelper.ConvertFromJNIArray<byte[]>(jData.GetRawObject());
-            if (offset != 0 || length != data.Length)
-            {
-                var slice = new byte[length];
-                Array.Copy(data, offset, slice, 0, length);
-                data = slice;
-            }
-
-            _owner.RaiseFrameEncoded(data, config, keyFrame, mime, ptsUs);
+            var bytes = new byte[length];
+            Buffer.BlockCopy(data, offset, bytes, 0, length);
+            _owner.RaiseFrameEncoded(bytes, config, keyFrame, mime, ptsUs);
         }
 
         void onError(string message)
