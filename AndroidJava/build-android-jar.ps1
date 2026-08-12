@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = "Stop"
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $buildDir = Join-Path $scriptDir "build"
-$jarDest = Join-Path $scriptDir "..\VideoStreamEncoder.jar"
+$jarDest = Join-Path $scriptDir "..\Plugins\Android\VideoStreamEncoder.jar"
 
 if (-not $AndroidSdk) {
     if ($env:ANDROID_HOME) {
@@ -13,7 +13,7 @@ if (-not $AndroidSdk) {
     } elseif ($env:ANDROID_SDK_ROOT) {
         $AndroidSdk = $env:ANDROID_SDK_ROOT
     } else {
-        $localProperties = Join-Path $scriptDir "..\..\..\..\VideoStreaming\android\local.properties"
+        $localProperties = Join-Path $scriptDir "..\..\VideoStreaming\android\local.properties"
         if (Test-Path $localProperties) {
             $line = Get-Content $localProperties | Where-Object { $_ -match '^sdk\.dir=' } | Select-Object -First 1
             if ($line) {

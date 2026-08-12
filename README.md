@@ -31,7 +31,7 @@ transports can be layered underneath the same frame protocol.
 3. Build the Android JAR once:
 
    ```powershell
-   cd Plugins/Android/java-src
+   cd AndroidJava
    .\build-android-jar.ps1 -AndroidSdk "C:\Users\90683\AppData\Local\Android\Sdk"
    ```
 
