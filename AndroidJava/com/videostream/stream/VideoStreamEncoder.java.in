@@ -19,8 +19,6 @@ public class VideoStreamEncoder {
         System.loadLibrary("unity-video-streamer-native");
     }
 
-    private static final int COLOR_NV12 =
-            MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar;
     private static final byte[] START_CODE_4 = {0, 0, 0, 1};
     private static final byte[] START_CODE_3 = {0, 0, 1};
 
@@ -53,7 +51,9 @@ public class VideoStreamEncoder {
             mime = mimeType;
 
             MediaFormat format = MediaFormat.createVideoFormat(mimeType, width, height);
-            format.setInteger(MediaFormat.KEY_COLOR_FORMAT, COLOR_NV12);
+            format.setInteger(
+                    MediaFormat.KEY_COLOR_FORMAT,
+                    MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface);
             format.setInteger(MediaFormat.KEY_BIT_RATE, bitrate);
             format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalSeconds);
@@ -75,7 +75,7 @@ public class VideoStreamEncoder {
             worker.start();
             return true;
         } catch (Exception e) {
-            error("open failed: " + e.getMessage());
+            error("open failed: " + e);
             close();
             return false;
         }
