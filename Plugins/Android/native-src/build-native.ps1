@@ -16,7 +16,7 @@ if (-not (Test-Path $toolchain)) {
     Write-Error "NDK toolchain not found under $toolchain"
 }
 
-$source = Join-Path $scriptDir "UnityVideoStreamerNative.cpp"
+$source = Join-Path $scriptDir "UnityVideoStreamerNative.cpp.in"
 $targets = @(
     @{ Abi = "arm64-v8a"; Clang = "aarch64-linux-android24-clang++.cmd" },
     @{ Abi = "armeabi-v7a"; Clang = "armv7a-linux-androideabi24-clang++.cmd" },
@@ -37,7 +37,7 @@ foreach ($target in $targets) {
     New-Item -ItemType Directory -Force -Path $outDir | Out-Null
     $out = Join-Path $outDir "libunity-video-streamer-native.so"
 
-    & $clang -std=c++17 -fPIC -shared -O2 -Wall `
+    & $clang -std=c++17 -x c++ -fPIC -shared -O2 -Wall `
         "-I$pluginApi" `
         $source `
         -o $out `
