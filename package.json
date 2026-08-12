@@ -11,6 +11,10 @@
     "android",
     "media-codec"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/kadu999/UnityUdpStreamer.git"
+  },
   "author": {
     "name": "kadu999",
     "url": "https://github.com/kadu999"
