@@ -21,6 +21,7 @@ namespace VideoStream
         public bool IsConfig => (Flags & FrameProtocol.FlagConfig) != 0;
         public bool IsIdrRequest => (Flags & FrameProtocol.FlagIdrRequest) != 0;
         public bool IsPing => (Flags & FrameProtocol.FlagPing) != 0;
+        public bool IsRegister => (Flags & FrameProtocol.FlagRegister) != 0;
         public bool IsLatencyProbe => (Flags & FrameProtocol.FlagLatencyProbe) != 0;
         public bool IsAvc => (Flags & FrameProtocol.FlagCodecAvc) != 0;
         public bool IsHevc => (Flags & FrameProtocol.FlagCodecHevc) != 0;

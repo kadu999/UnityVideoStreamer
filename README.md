@@ -37,7 +37,10 @@ transports can be layered underneath the same frame protocol.
 
 4. In Unity, create a `Unity Video Streamer` object from
    `GameObject -> Video Stream -> Unity Video Streamer`.
-5. Assign the camera that should be streamed and set the receiver IP/port.
+5. Assign the camera that should be streamed. If `Auto Discovery` is enabled,
+   the plugin listens on UDP `9997` for the Android Gateway's REGISTER
+   broadcast and automatically adds the receiver. `Target Address` is then an
+   optional static fallback for fixed/offline receiver setups.
 
 ## Compatible Receivers
 

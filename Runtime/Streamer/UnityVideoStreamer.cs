@@ -24,11 +24,13 @@ namespace VideoStream
         [SerializeField] string targetAddress = "192.168.43.129";
         [SerializeField] int targetPort = 9999;
         [SerializeField] int localPort = 9998;
+        [SerializeField] bool autoDiscovery = true;
         [SerializeField] bool autoStart = true;
 
         readonly object _stateLock = new object();
         IUnityVideoEncoder _encoder;
         UdpVideoSender _sender;
+        UdpTargetDiscovery _discovery;
         UnityFrameCapture _capture;
         FramePacketizer _packetizer;
         Coroutine _captureCoroutine;
@@ -104,8 +106,28 @@ namespace VideoStream
                     return;
                 }
 
-                if (!TryAddTarget(config.TargetAddress, config.TargetPort))
+                if (autoDiscovery)
                 {
+                    _discovery = new UdpTargetDiscovery();
+                    _discovery.TargetDiscovered += HandleTargetDiscovered;
+                    if (!_discovery.Start())
+                    {
+                        Debug.LogWarning("[VideoStream] UDP target discovery failed to bind :9997; using static target only");
+                        _discovery = null;
+                    }
+                }
+
+                if (!string.IsNullOrWhiteSpace(config.TargetAddress) &&
+                    !TryAddTarget(config.TargetAddress, config.TargetPort))
+                {
+                    CleanupStreaming();
+                    return;
+                }
+
+                if (autoDiscovery && _discovery == null &&
+                    string.IsNullOrWhiteSpace(config.TargetAddress))
+                {
+                    RaiseError("UDP target discovery failed and no static target address is configured");
                     CleanupStreaming();
                     return;
                 }
@@ -134,7 +156,8 @@ namespace VideoStream
                 _captureCoroutine = StartCoroutine(CaptureLoop());
                 _encoder.RequestKeyFrame();
 
-                Debug.Log($"[VideoStream] Streaming {width}x{height} {frameRate}fps to {config.TargetAddress}:{config.TargetPort}");
+                var discoveryNote = autoDiscovery ? " auto-discovery on" : " static target";
+                Debug.Log($"[VideoStream] Streaming {width}x{height} {frameRate}fps{discoveryNote}");
             }
         }
 
@@ -171,6 +194,13 @@ namespace VideoStream
                 _encoder = null;
             }
 
+            if (_discovery != null)
+            {
+                _discovery.TargetDiscovered -= HandleTargetDiscovered;
+                _discovery.Dispose();
+                _discovery = null;
+            }
+
             if (_sender != null)
             {
                 _sender.OnIdrRequested -= HandleIdrRequested;
@@ -204,6 +234,12 @@ namespace VideoStream
 
         void HandleIdrRequested()
         {
+            _encoder?.RequestKeyFrame();
+        }
+
+        void HandleTargetDiscovered(IPEndPoint endpoint)
+        {
+            _sender?.AddTarget(endpoint);
             _encoder?.RequestKeyFrame();
         }
 
@@ -251,6 +287,7 @@ namespace VideoStream
             targetAddress = "192.168.43.129";
             targetPort = 9999;
             localPort = 9998;
+            autoDiscovery = true;
             useHevc = true;
             flipY = true;
         }
