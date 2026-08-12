@@ -7,9 +7,9 @@ transports can be layered underneath the same frame protocol.
 ## Features
 
 - Android H.264/HEVC encoding through `MediaCodec`.
-- Captures a Unity `Camera` into a `RenderTexture` with `AsyncGPUReadback`.
-- Converts RGBA to NV12 and feeds `MediaCodec` byte buffers without touching
-  Unity's rendering context.
+- Captures a Unity `Camera` into a `RenderTexture` and blits it directly to a
+  `MediaCodec.createInputSurface()` through an Android native EGL plugin.
+- No `AsyncGPUReadback` or CPU RGBA-to-NV12 conversion in the streaming path.
 - Fragments packets with the same `UdpFramer` layout used by the Android and PC
   receivers.
 - Supports IDR requests from receivers and echoes latency probes.
