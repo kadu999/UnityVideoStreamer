@@ -42,6 +42,7 @@ namespace VideoStream
 
         public bool IsStreaming => _streaming;
         public string MimeType => useHevc ? "video/hevc" : "video/avc";
+        public RenderTexture PreviewTexture => _capture != null ? _capture.TargetTexture : null;
         public Camera CaptureCamera
         {
             get => captureCamera;
