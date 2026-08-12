@@ -243,6 +243,15 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
         return;
     }
 
+    if (g_renderedFrames <= 5)
+    {
+        unsigned char pixel[4] = {0, 0, 0, 0};
+        glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo);
+        glReadPixels(width / 2, height / 2, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, pixel);
+        LOGI("Source texture center pixel = %u,%u,%u,%u",
+             pixel[0], pixel[1], pixel[2], pixel[3]);
+    }
+
     glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glViewport(0, 0, width, height);
