@@ -190,7 +190,7 @@ public class VideoStreamEncoder {
                 ByteBuffer output = codec.getOutputBuffer(outputIndex);
                 byte[] encoded = new byte[info.size];
                 output.position(info.offset);
-                output.get(encoded, info.offset, info.size);
+                output.get(encoded, 0, info.size);
                 encoded = ensureAnnexB(encoded);
 
                 boolean config = (info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0;
