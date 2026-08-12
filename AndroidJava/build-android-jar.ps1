@@ -39,18 +39,30 @@ if (-not $androidJar) {
     Write-Error "android.jar not found under $AndroidSdk"
 }
 
-$sources = Get-ChildItem -Path (Join-Path $scriptDir "com") -Filter "*.java" -Recurse | Select-Object -ExpandProperty FullName
+$classesDir = Join-Path $buildDir "classes"
+$stagingDir = Join-Path $buildDir "java"
+New-Item -ItemType Directory -Force -Path $classesDir | Out-Null
+New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
+
+$sources = Get-ChildItem -Path (Join-Path $scriptDir "com") -Filter "*.java.in" -Recurse
 if (-not $sources) {
     Write-Error "No Java sources found"
 }
 
-$classesDir = Join-Path $buildDir "classes"
-New-Item -ItemType Directory -Force -Path $classesDir | Out-Null
+foreach ($source in $sources) {
+    $relative = $source.FullName.Substring($scriptDir.Length + 1)
+    $javaPath = $relative -replace '\.in$', ''
+    $destination = Join-Path $stagingDir $javaPath
+    New-Item -ItemType Directory -Force -Path (Split-Path $destination) | Out-Null
+    Copy-Item -LiteralPath $source.FullName -Destination $destination
+}
+
+$javaSources = Get-ChildItem -Path $stagingDir -Filter "*.java" -Recurse | Select-Object -ExpandProperty FullName
 
 & javac -encoding utf8 -source 1.8 -target 1.8 `
     -bootclasspath $androidJar.FullName `
     -d $classesDir `
-    $sources
+    $javaSources
 
 if ($LASTEXITCODE -ne 0) {
     Write-Error "javac failed"
