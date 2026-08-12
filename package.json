@@ -1,19 +1,18 @@
 {
-  "name": "com.videostream.udp-streamer",
+  "name": "com.videostream.unity-video-streamer",
   "version": "0.1.0",
-  "displayName": "StreamCast Unity UDP Streamer",
-  "description": "Streams a Unity camera's rendered frame to StreamCast UDP receivers using Android MediaCodec H.264/HEVC encoding.",
+  "displayName": "StreamCast Unity Video Streamer",
+  "description": "Streams a Unity camera's rendered frame to StreamCast receivers using Android MediaCodec H.264/HEVC encoding.",
   "unity": "6000.0",
   "keywords": [
     "video",
-    "udp",
     "streamcast",
     "android",
     "media-codec"
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/kadu999/UnityUdpStreamer.git"
+    "url": "https://github.com/kadu999/UnityVideoStreamer.git"
   },
   "author": {
     "name": "kadu999",

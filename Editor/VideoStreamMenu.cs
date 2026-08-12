@@ -5,19 +5,19 @@ namespace VideoStream.Editor
 {
     public static class VideoStreamMenu
     {
-        [MenuItem("GameObject/Video Stream/UDP Streamer", false, 10)]
-        static void CreateUdpStreamer()
+        [MenuItem("GameObject/Video Stream/Unity Video Streamer", false, 10)]
+        static void CreateUnityVideoStreamer()
         {
-            var existing = Object.FindObjectOfType<UdpVideoStreamer>();
+            var existing = Object.FindObjectOfType<UnityVideoStreamer>();
             if (existing != null)
             {
                 Selection.activeGameObject = existing.gameObject;
                 return;
             }
 
-            var go = new GameObject("UDP Video Streamer");
-            go.AddComponent<UdpVideoStreamer>();
-            Undo.RegisterCreatedObjectUndo(go, "Create UDP Video Streamer");
+            var go = new GameObject("Unity Video Streamer");
+            go.AddComponent<UnityVideoStreamer>();
+            Undo.RegisterCreatedObjectUndo(go, "Create Unity Video Streamer");
             Selection.activeGameObject = go;
         }
     }

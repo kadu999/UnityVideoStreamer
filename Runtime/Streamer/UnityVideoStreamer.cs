@@ -6,7 +6,7 @@ using UnityEngine;
 namespace VideoStream
 {
     [DisallowMultipleComponent]
-    public sealed class UdpVideoStreamer : MonoBehaviour
+    public sealed class UnityVideoStreamer : MonoBehaviour
     {
         [Header("Capture")]
         [SerializeField] Camera captureCamera;

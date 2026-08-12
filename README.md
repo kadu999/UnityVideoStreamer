@@ -1,7 +1,8 @@
-# StreamCast Unity UDP Streamer
+# StreamCast Unity Video Streamer
 
-Unity UPM plugin that streams a rendered `Camera` view over UDP using the
-StreamCast wire protocol.
+Unity UPM plugin that streams a rendered `Camera` view using the StreamCast
+wire protocol. The current Android backend uses MediaCodec; UDP, TCP, and USB
+transports can be layered underneath the same frame protocol.
 
 ## Features
 
@@ -16,7 +17,7 @@ StreamCast wire protocol.
 
 1. Clone or reference this repository as a Unity package:
    - Package Manager -> Add package from git URL
-   - or add `"com.videostream.udp-streamer": "file:../UnityUdpStreamer"`
+   - or add `"com.videostream.unity-video-streamer": "https://github.com/kadu999/UnityVideoStreamer.git"`
      to `Packages/manifest.json`.
 2. Build the Android JAR once:
 
@@ -25,8 +26,8 @@ StreamCast wire protocol.
    .\build-android-jar.ps1 -AndroidSdk "C:\Users\90683\AppData\Local\Android\Sdk"
    ```
 
-3. In Unity, create a `UDP Video Streamer` object from
-   `GameObject -> Video Stream -> UDP Streamer`.
+3. In Unity, create a `Unity Video Streamer` object from
+   `GameObject -> Video Stream -> Unity Video Streamer`.
 4. Assign the camera that should be streamed and set the receiver IP/port.
 
 ## StreamCast Receiver
@@ -46,7 +47,7 @@ the existing `UdpFramer`. The receiver should be one of:
 ## Platform Notes
 
 - The encoder backend currently targets Android builds.
-- `UdpVideoStreamer` uses a dedicated camera render texture; the source camera
+- `UnityVideoStreamer` uses a dedicated camera render texture; the source camera
   no longer renders directly to screen while streaming. Use a second display
   camera or a UI `RawImage` showing `RenderTexture` if live preview is needed.
 - Default packet size, ports, and flags match `StreamConfig`/`FrameProtocol` in
