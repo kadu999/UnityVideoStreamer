@@ -13,7 +13,7 @@ namespace VideoStream
         public int FrameRate = 30;
         public int Bitrate = 8_000_000;
         public int KeyFrameIntervalSeconds = 2;
-        public bool UseHevc = true;
+        public bool UseHevc = false;
         public bool FlipY = true;
 
         public string MimeType => UseHevc ? "video/hevc" : "video/avc";

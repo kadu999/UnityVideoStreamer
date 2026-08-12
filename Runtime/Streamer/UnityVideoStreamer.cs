@@ -17,7 +17,7 @@ namespace VideoStream
         [SerializeField] bool flipY = true;
 
         [Header("Encoding")]
-        [SerializeField] bool useHevc = true;
+        [SerializeField] bool useHevc = false;
         [SerializeField] int bitrate = 8_000_000;
         [SerializeField] int keyFrameIntervalSeconds = 2;
 
@@ -66,6 +66,11 @@ namespace VideoStream
         {
             get => autoStart;
             set => autoStart = value;
+        }
+        public bool UseHevc
+        {
+            get => useHevc;
+            set => useHevc = value;
         }
 
         void OnEnable()
@@ -328,7 +333,7 @@ namespace VideoStream
             targetPort = 9999;
             localPort = 9998;
             autoDiscovery = true;
-            useHevc = true;
+            useHevc = false;
             flipY = true;
         }
     }

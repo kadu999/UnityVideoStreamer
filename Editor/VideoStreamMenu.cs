@@ -16,7 +16,7 @@ namespace VideoStream.Editor
             }
 
             var go = new GameObject("Unity Video Streamer");
-            go.AddComponent<UnityVideoStreamer>();
+            go.AddComponent<UnityVideoStreamer>().UseHevc = false;
             Undo.RegisterCreatedObjectUndo(go, "Create Unity Video Streamer");
             Selection.activeGameObject = go;
         }
