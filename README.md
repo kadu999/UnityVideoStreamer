@@ -1,7 +1,7 @@
-# StreamCast Unity Video Streamer
+# Unity Video Streamer
 
-Unity UPM plugin that streams a rendered `Camera` view using the StreamCast
-wire protocol. The current Android backend uses MediaCodec; UDP, TCP, and USB
+Unity UPM plugin that streams a rendered `Camera` view using the project's
+frame protocol. The current Android backend uses MediaCodec; UDP, TCP, and USB
 transports can be layered underneath the same frame protocol.
 
 ## Features
@@ -9,7 +9,7 @@ transports can be layered underneath the same frame protocol.
 - Android H.264/HEVC encoding through `MediaCodec`.
 - Captures a Unity `Camera` into a `RenderTexture` with `AsyncGPUReadback`.
 - Fragments packets with the same `UdpFramer` layout used by the Android and PC
-  StreamCast receivers.
+  receivers.
 - Supports IDR requests from receivers and echoes latency probes.
 - UPM package layout modeled after `com.kadu999.device-link`.
 
@@ -30,7 +30,7 @@ transports can be layered underneath the same frame protocol.
    `GameObject -> Video Stream -> Unity Video Streamer`.
 4. Assign the camera that should be streamed and set the receiver IP/port.
 
-## StreamCast Receiver
+## Compatible Receivers
 
 The plugin emits the existing `FrameProtocol` packets:
 
@@ -42,7 +42,7 @@ Each large packet is split into UDP fragments with the same 10-byte header as
 the existing `UdpFramer`. The receiver should be one of:
 
 - Android `gateway` app.
-- `windows/main.py` StreamCast PC receiver.
+- `windows/main.py` PC receiver.
 
 ## Platform Notes
 
@@ -51,4 +51,4 @@ the existing `UdpFramer`. The receiver should be one of:
   no longer renders directly to screen while streaming. Use a second display
   camera or a UI `RawImage` showing `RenderTexture` if live preview is needed.
 - Default packet size, ports, and flags match `StreamConfig`/`FrameProtocol` in
-  the main StreamCast repository.
+  the companion video-streaming repository.

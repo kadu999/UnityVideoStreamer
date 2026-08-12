@@ -1,12 +1,12 @@
 {
   "name": "com.videostream.unity-video-streamer",
   "version": "0.1.0",
-  "displayName": "StreamCast Unity Video Streamer",
-  "description": "Streams a Unity camera's rendered frame to StreamCast receivers using Android MediaCodec H.264/HEVC encoding.",
+  "displayName": "Unity Video Streamer",
+  "description": "Streams a Unity camera's rendered frame to Android/PC receivers using Android MediaCodec H.264/HEVC encoding.",
   "unity": "6000.0",
   "keywords": [
     "video",
-    "streamcast",
+    "video-stream",
     "android",
     "media-codec"
   ],
