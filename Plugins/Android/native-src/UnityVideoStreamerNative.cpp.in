@@ -12,6 +12,10 @@
 #include <cstdint>
 #include <mutex>
 
+#ifndef GL_FRAMEBUFFER_SRGB
+#define GL_FRAMEBUFFER_SRGB 0x8DB9
+#endif
+
 #define LOG_TAG "UnityVideoStreamerNative"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
@@ -255,6 +259,7 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
     glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo);
     glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
     glViewport(0, 0, width, height);
+    glDisable(GL_FRAMEBUFFER_SRGB);
 
     GLint sourceY0 = flipY ? height : 0;
     GLint sourceY1 = flipY ? 0 : height;
