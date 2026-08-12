@@ -1,0 +1,8 @@
+fileFormatVersion: 2
+guid: e200000000000000000000000000000a
+PluginImporter:
+  platformData:
+  - first:
+      Android: Android
+    second:
+      enabled: 1

@@ -1,0 +1,370 @@
+#include "IUnityGraphics.h"
+#include "IUnityInterface.h"
+
+#include <android/log.h>
+#include <android/native_window.h>
+#include <android/native_window_jni.h>
+#include <EGL/egl.h>
+#include <GLES3/gl3.h>
+#include <jni.h>
+
+#include <atomic>
+#include <cstdint>
+#include <mutex>
+
+#define LOG_TAG "UnityVideoStreamerNative"
+#define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
+#define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
+#define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
+
+static JavaVM* g_javaVm = nullptr;
+static IUnityInterfaces* g_unityInterfaces = nullptr;
+static IUnityGraphics* g_graphics = nullptr;
+static int g_eventBase = -1;
+
+static std::mutex g_eglMutex;
+static ANativeWindow* g_nativeWindow = nullptr;
+static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
+static EGLSurface g_eglSurface = EGL_NO_SURFACE;
+static EGLContext g_eglContext = EGL_NO_CONTEXT;
+static GLuint g_fbo = 0;
+static bool g_contextReady = false;
+static int g_configuredWidth = 0;
+static int g_configuredHeight = 0;
+
+static EGLDisplay g_unityDisplay = EGL_NO_DISPLAY;
+static EGLContext g_unityContext = EGL_NO_CONTEXT;
+static EGLSurface g_unityDraw = EGL_NO_SURFACE;
+static EGLSurface g_unityRead = EGL_NO_SURFACE;
+
+static std::atomic<bool> g_active(false);
+static std::atomic<uintptr_t> g_textureId(0);
+static std::atomic<int> g_frameWidth(0);
+static std::atomic<int> g_frameHeight(0);
+static std::atomic<int> g_frameFlipY(1);
+
+static const char* EglErrorString(EGLint error)
+{
+    switch (error)
+    {
+        case EGL_SUCCESS: return "EGL_SUCCESS";
+        case EGL_NOT_INITIALIZED: return "EGL_NOT_INITIALIZED";
+        case EGL_BAD_ACCESS: return "EGL_BAD_ACCESS";
+        case EGL_BAD_ALLOC: return "EGL_BAD_ALLOC";
+        case EGL_BAD_ATTRIBUTE: return "EGL_BAD_ATTRIBUTE";
+        case EGL_BAD_CONFIG: return "EGL_BAD_CONFIG";
+        case EGL_BAD_CONTEXT: return "EGL_BAD_CONTEXT";
+        case EGL_BAD_CURRENT_SURFACE: return "EGL_BAD_CURRENT_SURFACE";
+        case EGL_BAD_DISPLAY: return "EGL_BAD_DISPLAY";
+        case EGL_BAD_MATCH: return "EGL_BAD_MATCH";
+        case EGL_BAD_NATIVE_PIXMAP: return "EGL_BAD_NATIVE_PIXMAP";
+        case EGL_BAD_NATIVE_WINDOW: return "EGL_BAD_NATIVE_WINDOW";
+        case EGL_BAD_PARAMETER: return "EGL_BAD_PARAMETER";
+        case EGL_BAD_SURFACE: return "EGL_BAD_SURFACE";
+        case EGL_CONTEXT_LOST: return "EGL_CONTEXT_LOST";
+        default: return "EGL_UNKNOWN";
+    }
+}
+
+static void LogEglError(const char* what)
+{
+    EGLint error = eglGetError();
+    LOGE("%s failed: %s (0x%x)", what, EglErrorString(error), error);
+}
+
+static bool CreateEglSurfaceAndContext()
+{
+    if (g_contextReady) return true;
+    if (!g_nativeWindow) return false;
+
+    EGLDisplay unityDisplay = eglGetCurrentDisplay();
+    EGLContext unityContext = eglGetCurrentContext();
+    EGLSurface unityDraw = eglGetCurrentSurface(EGL_DRAW);
+    EGLSurface unityRead = eglGetCurrentSurface(EGL_READ);
+
+    if (unityDisplay == EGL_NO_DISPLAY || unityContext == EGL_NO_CONTEXT)
+    {
+        LOGE("No current Unity EGL context during render event");
+        return false;
+    }
+
+    g_unityDisplay = unityDisplay;
+    g_unityContext = unityContext;
+    g_unityDraw = unityDraw;
+    g_unityRead = unityRead;
+
+    EGLint configAttribs[] =
+    {
+        EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT,
+        EGL_RED_SIZE, 8,
+        EGL_GREEN_SIZE, 8,
+        EGL_BLUE_SIZE, 8,
+        EGL_ALPHA_SIZE, 8,
+        EGL_NONE
+    };
+
+    EGLConfig config = nullptr;
+    EGLint numConfigs = 0;
+    if (!eglChooseConfig(unityDisplay, configAttribs, &config, 1, &numConfigs) || numConfigs < 1)
+    {
+        LogEglError("eglChooseConfig");
+        return false;
+    }
+
+    EGLint contextAttribs[] =
+    {
+        EGL_CONTEXT_CLIENT_VERSION, 3,
+        EGL_NONE
+    };
+
+    EGLSurface surface = eglCreateWindowSurface(unityDisplay, config, g_nativeWindow, nullptr);
+    if (surface == EGL_NO_SURFACE)
+    {
+        LogEglError("eglCreateWindowSurface");
+        return false;
+    }
+
+    EGLContext context = eglCreateContext(unityDisplay, config, unityContext, contextAttribs);
+    if (context == EGL_NO_CONTEXT)
+    {
+        LogEglError("eglCreateContext");
+        eglDestroySurface(unityDisplay, surface);
+        return false;
+    }
+
+    if (g_configuredWidth > 0 && g_configuredHeight > 0)
+    {
+        ANativeWindow_setBuffersGeometry(
+            g_nativeWindow,
+            g_configuredWidth,
+            g_configuredHeight,
+            WINDOW_FORMAT_RGBA_8888);
+    }
+
+    g_eglDisplay = unityDisplay;
+    g_eglSurface = surface;
+    g_eglContext = context;
+    g_contextReady = true;
+    return true;
+}
+
+static void ReleaseEglResources()
+{
+    std::lock_guard<std::mutex> lock(g_eglMutex);
+
+    if (g_contextReady)
+    {
+        if (eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
+        {
+            if (g_fbo != 0)
+            {
+                glDeleteFramebuffers(1, &g_fbo);
+                g_fbo = 0;
+            }
+        }
+
+        eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+
+        if (g_eglContext != EGL_NO_CONTEXT)
+        {
+            eglDestroyContext(g_eglDisplay, g_eglContext);
+            g_eglContext = EGL_NO_CONTEXT;
+        }
+        if (g_eglSurface != EGL_NO_SURFACE)
+        {
+            eglDestroySurface(g_eglDisplay, g_eglSurface);
+            g_eglSurface = EGL_NO_SURFACE;
+        }
+
+        g_eglDisplay = EGL_NO_DISPLAY;
+        g_contextReady = false;
+    }
+
+    if (g_nativeWindow != nullptr)
+    {
+        ANativeWindow_release(g_nativeWindow);
+        g_nativeWindow = nullptr;
+    }
+
+    g_unityDisplay = EGL_NO_DISPLAY;
+    g_unityContext = EGL_NO_CONTEXT;
+    g_unityDraw = EGL_NO_SURFACE;
+    g_unityRead = EGL_NO_SURFACE;
+    g_configuredWidth = 0;
+    g_configuredHeight = 0;
+}
+
+static void UNITY_INTERFACE_API RenderEvent(int eventId)
+{
+    if (eventId != g_eventBase || !g_active.load()) return;
+
+    std::lock_guard<std::mutex> lock(g_eglMutex);
+
+    if (!g_nativeWindow) return;
+    if (!g_contextReady && !CreateEglSurfaceAndContext()) return;
+
+    uintptr_t texture = g_textureId.load();
+    int width = g_frameWidth.load();
+    int height = g_frameHeight.load();
+    int flipY = g_frameFlipY.load();
+    if (texture == 0 || width <= 0 || height <= 0) return;
+
+    EGLDisplay unityDisplay = eglGetCurrentDisplay();
+    EGLContext unityContext = eglGetCurrentContext();
+    EGLSurface unityDraw = eglGetCurrentSurface(EGL_DRAW);
+    EGLSurface unityRead = eglGetCurrentSurface(EGL_READ);
+    if (unityDisplay == EGL_NO_DISPLAY || unityContext == EGL_NO_CONTEXT) return;
+
+    if (!eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
+    {
+        LogEglError("eglMakeCurrent(encoder surface)");
+        return;
+    }
+
+    GLuint sourceTexture = static_cast<GLuint>(texture);
+    if (g_fbo == 0) glGenFramebuffers(1, &g_fbo);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, g_fbo);
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER,
+        GL_COLOR_ATTACHMENT0,
+        GL_TEXTURE_2D,
+        sourceTexture,
+        0);
+
+    GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+    if (status != GL_FRAMEBUFFER_COMPLETE)
+    {
+        LOGE("Unity RenderTexture framebuffer incomplete: 0x%x", status);
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
+        eglMakeCurrent(unityDisplay, unityDraw, unityRead, unityContext);
+        return;
+    }
+
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, g_fbo);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glViewport(0, 0, width, height);
+
+    GLint sourceY0 = flipY ? height : 0;
+    GLint sourceY1 = flipY ? 0 : height;
+    glBlitFramebuffer(
+        0, sourceY0, width, sourceY1,
+        0, 0, width, height,
+        GL_COLOR_BUFFER_BIT,
+        GL_LINEAR);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    EGLBoolean swapped = eglSwapBuffers(g_eglDisplay, g_eglSurface);
+    if (!swapped)
+    {
+        LogEglError("eglSwapBuffers");
+    }
+
+    if (!eglMakeCurrent(unityDisplay, unityDraw, unityRead, unityContext))
+    {
+        LogEglError("eglMakeCurrent(restore unity)");
+    }
+}
+
+extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginLoad(
+    IUnityInterfaces* unityInterfaces)
+{
+    g_unityInterfaces = unityInterfaces;
+    g_graphics = unityInterfaces->Get<IUnityGraphics>();
+    if (g_graphics != nullptr)
+    {
+        g_eventBase = g_graphics->ReserveEventIDRange(1);
+    }
+    else
+    {
+        g_eventBase = 0;
+    }
+}
+
+extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginUnload()
+{
+    ReleaseEglResources();
+    g_graphics = nullptr;
+    g_unityInterfaces = nullptr;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT UnityRenderingEvent UNITY_INTERFACE_API GetRenderEventFunc()
+{
+    return &RenderEvent;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API GetRenderEventId()
+{
+    return g_eventBase;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API SetActive(int active)
+{
+    g_active.store(active != 0);
+}
+
+extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API SetFrameInfo(
+    void* texture,
+    int width,
+    int height,
+    int flipY)
+{
+    g_textureId.store(reinterpret_cast<uintptr_t>(texture));
+    g_frameWidth.store(width);
+    g_frameHeight.store(height);
+    g_frameFlipY.store(flipY);
+}
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)
+{
+    g_javaVm = vm;
+    return JNI_VERSION_1_6;
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_videostream_stream_VideoStreamEncoder_nativeAttachInputSurface(
+    JNIEnv* env,
+    jobject thiz,
+    jobject surface,
+    jint width,
+    jint height)
+{
+    std::lock_guard<std::mutex> lock(g_eglMutex);
+    if (g_nativeWindow != nullptr)
+    {
+        ANativeWindow_release(g_nativeWindow);
+        g_nativeWindow = nullptr;
+    }
+
+    if (surface == nullptr)
+    {
+        LOGE("nativeAttachInputSurface called with null Surface");
+        return;
+    }
+
+    g_nativeWindow = ANativeWindow_fromSurface(env, surface);
+    if (g_nativeWindow == nullptr)
+    {
+        LOGE("ANativeWindow_fromSurface failed");
+        return;
+    }
+
+    g_configuredWidth = width;
+    g_configuredHeight = height;
+    ANativeWindow_setBuffersGeometry(
+        g_nativeWindow,
+        width,
+        height,
+        WINDOW_FORMAT_RGBA_8888);
+    LOGI("Attached MediaCodec input Surface %dx%d", width, height);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_videostream_stream_VideoStreamEncoder_nativeReleaseInputSurface(
+    JNIEnv* env,
+    jobject thiz)
+{
+    ReleaseEglResources();
+    g_active.store(false);
+}

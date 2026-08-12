@@ -4,18 +4,21 @@ import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
 import android.os.Bundle;
+import android.view.Surface;
 
 import java.io.ByteArrayOutputStream;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 public class VideoStreamEncoder {
+    static {
+        System.loadLibrary("unity-video-streamer-native");
+    }
+
     private static final int COLOR_NV12 =
             MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420SemiPlanar;
     private static final byte[] START_CODE_4 = {0, 0, 0, 1};
@@ -25,10 +28,9 @@ public class VideoStreamEncoder {
 
     private VideoStreamCallback callback;
     private MediaCodec codec;
+    private Surface inputSurface;
     private String mime;
-    private volatile boolean flipY = true;
     private volatile boolean forceKeyFrame = false;
-    private BlockingQueue<Frame> pending;
     private Thread worker;
     private byte[] csd;
 
@@ -36,12 +38,8 @@ public class VideoStreamEncoder {
         this.callback = cb;
     }
 
-    public void setFlipY(boolean flipY) {
-        this.flipY = flipY;
-    }
-
     public boolean open(int width, int height, int bitrate, int frameRate,
-                        int iFrameIntervalSeconds, String mimeType, int maxQueuedFrames) {
+                        int iFrameIntervalSeconds, String mimeType) {
         if (running.get()) return true;
 
         width &= ~1;
@@ -52,8 +50,6 @@ public class VideoStreamEncoder {
         }
 
         try {
-            if (maxQueuedFrames < 1) maxQueuedFrames = 1;
-            pending = new ArrayBlockingQueue<Frame>(maxQueuedFrames);
             mime = mimeType;
 
             MediaFormat format = MediaFormat.createVideoFormat(mimeType, width, height);
@@ -65,6 +61,8 @@ public class VideoStreamEncoder {
 
             codec = MediaCodec.createEncoderByType(mimeType);
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
+            inputSurface = codec.createInputSurface();
+            nativeAttachInputSurface(inputSurface, width, height);
             codec.start();
 
             running.set(true);
@@ -81,12 +79,6 @@ public class VideoStreamEncoder {
             close();
             return false;
         }
-    }
-
-    public boolean pushFrame(byte[] rgba, int width, int height, long ptsUs) {
-        if (!running.get()) return false;
-        if (rgba == null || rgba.length < width * height * 4) return false;
-        return pending.offer(new Frame(rgba, width, height, ptsUs));
     }
 
     public void requestKeyFrame() {
@@ -114,7 +106,17 @@ public class VideoStreamEncoder {
             worker = null;
         }
 
-        if (pending != null) pending.clear();
+        try {
+            nativeReleaseInputSurface();
+        } catch (Throwable ignored) {
+        }
+        if (inputSurface != null) {
+            try {
+                inputSurface.release();
+            } catch (Exception ignored) {
+            }
+            inputSurface = null;
+        }
         if (codec != null) {
             try {
                 codec.stop();
@@ -129,6 +131,9 @@ public class VideoStreamEncoder {
         csd = null;
     }
 
+    private native void nativeAttachInputSurface(Surface surface, int width, int height);
+    private native void nativeReleaseInputSurface();
+
     public boolean isRunning() {
         return running.get();
     }
@@ -136,40 +141,17 @@ public class VideoStreamEncoder {
     private void workerLoop() {
         try {
             while (running.get()) {
-                Frame frame;
                 try {
-                    frame = pending.poll(20, TimeUnit.MILLISECONDS);
+                    Thread.sleep(1);
                 } catch (InterruptedException e) {
                     break;
                 }
-
-                if (frame == null) {
-                    drainOutput(false);
-                    continue;
-                }
-
-                pumpFrame(frame);
-                drainOutput(true);
+                drainOutput(false);
             }
         } catch (Exception e) {
             error("encoder worker failed: " + e.getMessage());
         } finally {
             releaseCodec();
-        }
-    }
-
-    private void pumpFrame(Frame frame) {
-        try {
-            int inputIndex = codec.dequeueInputBuffer(10_000);
-            if (inputIndex < 0) return;
-
-            byte[] nv12 = toNv12(frame.rgba, frame.width, frame.height, flipY);
-            ByteBuffer input = codec.getInputBuffer(inputIndex);
-            input.clear();
-            input.put(nv12);
-            codec.queueInputBuffer(inputIndex, 0, nv12.length, frame.ptsUs, 0);
-        } catch (Exception e) {
-            error("pumpFrame failed: " + e.getMessage());
         }
     }
 
@@ -257,39 +239,6 @@ public class VideoStreamEncoder {
             } catch (Exception ignored) {
             }
         }
-    }
-
-    private static byte[] toNv12(byte[] rgba, int width, int height, boolean flip) {
-        int frameSize = width * height;
-        byte[] nv12 = new byte[frameSize + frameSize / 2];
-        int yIndex = 0;
-        int uvIndex = frameSize;
-
-        for (int y = 0; y < height; y++) {
-            int srcRow = flip ? height - 1 - y : y;
-            int srcOffset = srcRow * width * 4;
-
-            for (int x = 0; x < width; x++) {
-                int r = rgba[srcOffset + x * 4] & 0xff;
-                int g = rgba[srcOffset + x * 4 + 1] & 0xff;
-                int b = rgba[srcOffset + x * 4 + 2] & 0xff;
-
-                int yv = ((66 * r + 129 * g + 25 * b + 128) >> 8) + 16;
-                nv12[yIndex++] = (byte) clamp(yv, 0, 255);
-
-                if ((y & 1) == 0 && (x & 1) == 0) {
-                    int u = ((-38 * r - 74 * g + 112 * b + 128) >> 8) + 128;
-                    int v = ((112 * r - 94 * g - 18 * b + 128) >> 8) + 128;
-                    nv12[uvIndex++] = (byte) clamp(u, 0, 255);
-                    nv12[uvIndex++] = (byte) clamp(v, 0, 255);
-                }
-            }
-        }
-        return nv12;
-    }
-
-    private static int clamp(int value, int min, int max) {
-        return value < min ? min : (value > max ? max : value);
     }
 
     private static byte[] ensureAnnexB(byte[] data) {
@@ -404,17 +353,4 @@ public class VideoStreamEncoder {
         return out;
     }
 
-    private static final class Frame {
-        final byte[] rgba;
-        final int width;
-        final int height;
-        final long ptsUs;
-
-        Frame(byte[] rgba, int width, int height, long ptsUs) {
-            this.rgba = rgba;
-            this.width = width;
-            this.height = height;
-            this.ptsUs = ptsUs;
-        }
-    }
 }

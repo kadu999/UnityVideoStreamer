@@ -7,7 +7,9 @@ transports can be layered underneath the same frame protocol.
 ## Features
 
 - Android H.264/HEVC encoding through `MediaCodec`.
-- Captures a Unity `Camera` into a `RenderTexture` with `AsyncGPUReadback`.
+- Captures a Unity `Camera` into a `RenderTexture` and blits it directly to a
+  `MediaCodec.createInputSurface()` through an Android native EGL plugin.
+- No `AsyncGPUReadback` or CPU RGBA-to-NV12 conversion in the streaming path.
 - Fragments packets with the same `UdpFramer` layout used by the Android and PC
   receivers.
 - Supports IDR requests from receivers and echoes latency probes.
@@ -19,16 +21,23 @@ transports can be layered underneath the same frame protocol.
    - Package Manager -> Add package from git URL
    - or add `"com.videostream.unity-video-streamer": "https://github.com/kadu999/UnityVideoStreamer.git"`
      to `Packages/manifest.json`.
-2. Build the Android JAR once:
+2. Build the Android native EGL plugin once:
+
+   ```powershell
+   cd Plugins/Android/native-src
+   .\build-native.ps1
+   ```
+
+3. Build the Android JAR once:
 
    ```powershell
    cd Plugins/Android/java-src
    .\build-android-jar.ps1 -AndroidSdk "C:\Users\90683\AppData\Local\Android\Sdk"
    ```
 
-3. In Unity, create a `Unity Video Streamer` object from
+4. In Unity, create a `Unity Video Streamer` object from
    `GameObject -> Video Stream -> Unity Video Streamer`.
-4. Assign the camera that should be streamed and set the receiver IP/port.
+5. Assign the camera that should be streamed and set the receiver IP/port.
 
 ## Compatible Receivers
 
@@ -47,6 +56,8 @@ the existing `UdpFramer`. The receiver should be one of:
 ## Platform Notes
 
 - The encoder backend currently targets Android builds.
+- The native Surface plugin requires OpenGLES3. The package forces this API
+  during Android builds through `AndroidGraphicsSettings`.
 - `UnityVideoStreamer` uses a dedicated camera render texture; the source camera
   no longer renders directly to screen while streaming. Use a second display
   camera or a UI `RawImage` showing `RenderTexture` if live preview is needed.

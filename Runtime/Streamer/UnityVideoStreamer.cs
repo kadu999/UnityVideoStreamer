@@ -19,7 +19,6 @@ namespace VideoStream
         [SerializeField] bool useHevc = true;
         [SerializeField] int bitrate = 8_000_000;
         [SerializeField] int keyFrameIntervalSeconds = 2;
-        [SerializeField] int maxQueuedFrames = 3;
 
         [Header("UDP")]
         [SerializeField] string targetAddress = "192.168.43.129";
@@ -85,7 +84,6 @@ namespace VideoStream
                     FrameRate = frameRate,
                     Bitrate = bitrate,
                     KeyFrameIntervalSeconds = keyFrameIntervalSeconds,
-                    MaxQueuedFrames = maxQueuedFrames,
                     UseHevc = useHevc,
                     FlipY = flipY
                 };
@@ -131,7 +129,6 @@ namespace VideoStream
                     return;
                 }
 
-                _capture.FrameReady += HandleFrameReady;
                 _packetizer = new FramePacketizer();
                 _streaming = true;
                 _captureCoroutine = StartCoroutine(CaptureLoop());
@@ -162,7 +159,6 @@ namespace VideoStream
         {
             if (_capture != null)
             {
-                _capture.FrameReady -= HandleFrameReady;
                 _capture.Dispose();
                 _capture = null;
             }
@@ -193,14 +189,9 @@ namespace VideoStream
                 yield return new WaitForEndOfFrame();
                 if (_streaming && _capture != null)
                 {
-                    _capture.CaptureFrame(NowUs());
+                    _capture.RenderFrameToEncoder(_encoder);
                 }
             }
-        }
-
-        void HandleFrameReady(byte[] rgba, int frameWidth, int frameHeight, long ptsUs, bool flip)
-        {
-            _encoder?.PushFrame(rgba, frameWidth, frameHeight, ptsUs);
         }
 
         void HandleFrameEncoded(EncodedFrame frame)
@@ -248,15 +239,6 @@ namespace VideoStream
         {
             Debug.LogError("[VideoStream] " + message);
             OnError?.Invoke(message);
-        }
-
-        static long NowUs()
-        {
-#if UNITY_2022_2_OR_NEWER
-            return (long)(Time.realtimeSinceStartupAsDouble * 1_000_000d);
-#else
-            return (long)(Time.realtimeSinceStartup * 1_000_000d);
-#endif
         }
 
         void Reset()
