@@ -222,7 +222,9 @@ static void EnsureSwapThreadStarted()
                 continue;
             }
 
+            double swapStartMs = NowMs();
             EGLBoolean swapped = eglSwapBuffers(g_eglDisplay, g_eglSurface);
+            double swapDurationMs = NowMs() - swapStartMs;
             if (!swapped)
             {
                 LogEglError("eglSwapBuffers");
@@ -232,11 +234,12 @@ static void EnsureSwapThreadStarted()
                 g_renderedFrames++;
                 if (g_renderedFrames <= 5 || g_renderedFrames % 60 == 0)
                 {
-                    LOGI("Rendered frame %d (%dx%d flip=%d)",
+                    LOGI("Rendered frame %d (%dx%d flip=%d swap=%.2fms)",
                          g_renderedFrames,
                          g_frameWidth.load(),
                          g_frameHeight.load(),
-                         g_frameFlipY.load());
+                         g_frameFlipY.load(),
+                         swapDurationMs);
                 }
             }
 
