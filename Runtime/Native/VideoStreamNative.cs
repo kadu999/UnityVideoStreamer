@@ -80,6 +80,9 @@ namespace VideoStream
         internal static extern int VSMedia_DecoderProcessPackets();
 
         [DllImport(Library)]
+        internal static extern int VSMedia_DecoderSetPreviewEnabled(int enabled);
+
+        [DllImport(Library)]
         internal static extern int VSMedia_DecoderDequeueRgba(
             [Out] byte[] buffer,
             int capacity,

@@ -10,6 +10,7 @@ namespace VideoStream
         [SerializeField] int localPort = 9999;
         [SerializeField] string mime = "video/avc";
         [SerializeField] bool autoStart = true;
+        [SerializeField] bool publishTexture = true;
 
         readonly byte[] _frameBuffer = new byte[32 * 1024 * 1024];
         Texture2D _outputTexture;
@@ -32,6 +33,12 @@ namespace VideoStream
         {
             get => autoStart;
             set => autoStart = value;
+        }
+
+        public bool PublishTexture
+        {
+            get => publishTexture;
+            set => publishTexture = value;
         }
 
         public event Action<byte[], int, int, long> FrameDecoded;
@@ -69,6 +76,7 @@ namespace VideoStream
             }
 
             var udpStarted = VideoStreamNative.VSMedia_UdpStart(localPort) == 1;
+            VideoStreamNative.VSMedia_DecoderSetPreviewEnabled(publishTexture ? 1 : 0);
             _running = udpStarted && VideoStreamNative.VSMedia_DecoderStart(mime) == 1;
             if (udpStarted && !_running)
             {
@@ -107,6 +115,11 @@ namespace VideoStream
 
                 var rgbaSize = width * height * 4;
                 if (size < rgbaSize || rgbaSize > _frameBuffer.Length)
+                {
+                    continue;
+                }
+
+                if (!publishTexture)
                 {
                     continue;
                 }

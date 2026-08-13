@@ -54,6 +54,7 @@ namespace
     std::thread gProcessThread;
     bool gDecoderActive = false;
     bool gDecoderConfigured = false;
+    std::atomic<bool> gPreviewEnabled{true};
     std::string gMime = "video/avc";
     std::vector<uint8_t> gCsd;
     std::vector<std::vector<uint8_t>> gDecoderCsdBuffers;
@@ -348,6 +349,12 @@ namespace
                 continue;
             }
 
+            if (!gPreviewEnabled.load())
+            {
+                AMediaCodec_releaseOutputBuffer(codec, index, false);
+                continue;
+            }
+
             size_t bufferSize = 0;
             uint8_t* buffer = AMediaCodec_getOutputBuffer(codec, index, &bufferSize);
             if (buffer != nullptr && info.size > 0)
@@ -518,6 +525,12 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderStart(const char* mime)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
         }
     });
+    return 1;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderSetPreviewEnabled(int enabled)
+{
+    gPreviewEnabled.store(enabled != 0);
     return 1;
 }
 
