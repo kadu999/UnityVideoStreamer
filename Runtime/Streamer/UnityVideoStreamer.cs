@@ -38,6 +38,7 @@ namespace VideoStream
         Coroutine _captureCoroutine;
         volatile bool _streaming;
         long _encodedFrameLogCount;
+        float _nextCaptureTime;
 
         public event Action<string> OnError;
 
@@ -197,6 +198,7 @@ namespace VideoStream
 
                 _packetizer = new FramePacketizer();
                 _streaming = true;
+                _nextCaptureTime = 0f;
                 _captureCoroutine = StartCoroutine(CaptureLoop());
                 _encoder.RequestKeyFrame();
 
@@ -261,6 +263,9 @@ namespace VideoStream
             while (_streaming)
             {
                 yield return new WaitForEndOfFrame();
+                if (Time.unscaledTime < _nextCaptureTime) continue;
+                _nextCaptureTime = Time.unscaledTime + (1f / Mathf.Max(1, frameRate));
+
                 if (_streaming && _capture != null)
                 {
                     _capture.RenderFrameToEncoder(_encoder);
