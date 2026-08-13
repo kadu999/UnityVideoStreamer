@@ -151,6 +151,7 @@ static bool CreateEglSurfaceAndContext()
     g_eglSurface = surface;
     g_eglContext = context;
     g_contextReady = true;
+    eglSwapInterval(g_eglDisplay, 0);
     return true;
 }
 
