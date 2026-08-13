@@ -41,6 +41,7 @@ namespace VideoStream
         long _encodedFrameLogCount;
         float _nextCaptureTime;
         bool _connected;
+        int _idrRequestCount;
 
         public event Action<string> OnError;
         public event Action<bool> SearchingChanged;
@@ -99,6 +100,12 @@ namespace VideoStream
 
         void Update()
         {
+            var idrRequests = Interlocked.Exchange(ref _idrRequestCount, 0);
+            if (idrRequests > 0)
+            {
+                _encoder?.RequestKeyFrame();
+            }
+
             while (_pendingTargets.TryDequeue(out var endpoint))
             {
                 TargetDiscovered?.Invoke(endpoint);
@@ -346,7 +353,7 @@ namespace VideoStream
 
         void HandleIdrRequested()
         {
-            _encoder?.RequestKeyFrame();
+            Interlocked.Increment(ref _idrRequestCount);
         }
 
         void HandleTargetDiscovered(IPEndPoint endpoint)
