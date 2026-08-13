@@ -9,6 +9,7 @@
 #include <jni.h>
 
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <mutex>
 
@@ -47,6 +48,12 @@ static std::atomic<int> g_frameWidth(0);
 static std::atomic<int> g_frameHeight(0);
 static std::atomic<int> g_frameFlipY(1);
 static int g_renderedFrames = 0;
+
+static double NowMs()
+{
+    return std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
 
 static const char* EglErrorString(EGLint error)
 {
@@ -222,11 +229,13 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
     EGLSurface unityRead = eglGetCurrentSurface(EGL_READ);
     if (unityDisplay == EGL_NO_DISPLAY || unityContext == EGL_NO_CONTEXT) return;
 
+    double tMakeCurrent0 = NowMs();
     if (!eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
     {
         LogEglError("eglMakeCurrent(encoder surface)");
         return;
     }
+    double tBlit0 = NowMs();
 
     GLuint sourceTexture = static_cast<GLuint>(texture);
     if (g_fbo == 0) glGenFramebuffers(1, &g_fbo);
@@ -269,6 +278,7 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
         0, 0, width, height,
         GL_COLOR_BUFFER_BIT,
         GL_LINEAR);
+    double tSwap0 = NowMs();
 
     if (g_renderedFrames <= 5)
     {
@@ -305,6 +315,17 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
     if (!eglMakeCurrent(unityDisplay, unityDraw, unityRead, unityContext))
     {
         LogEglError("eglMakeCurrent(restore unity)");
+    }
+    double tRestore0 = NowMs();
+
+    if (g_renderedFrames <= 5 || g_renderedFrames % 60 == 0)
+    {
+        LOGI("Render timing make=%.2fms blit=%.2fms swap=%.2fms restore=%.2fms total=%.2fms",
+             tBlit0 - tMakeCurrent0,
+             tSwap0 - tBlit0,
+             tRestore0 - tSwap0,
+             tRestore0 - tMakeCurrent0,
+             tRestore0 - tMakeCurrent0);
     }
 }
 
