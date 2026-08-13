@@ -324,6 +324,7 @@ namespace VideoStream
                 if (_streaming && _capture != null)
                 {
                     _capture.RenderFrameToEncoder(_encoder);
+                    _encoder.PollEncodedFrames();
                 }
             }
         }
