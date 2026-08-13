@@ -5,6 +5,7 @@
 #include <android/native_window.h>
 #include <android/native_window_jni.h>
 #include <EGL/egl.h>
+#include <EGL/eglext.h>
 #include <GLES3/gl3.h>
 #include <jni.h>
 
@@ -41,6 +42,7 @@ static EGLDisplay g_unityDisplay = EGL_NO_DISPLAY;
 static EGLContext g_unityContext = EGL_NO_CONTEXT;
 static EGLSurface g_unityDraw = EGL_NO_SURFACE;
 static EGLSurface g_unityRead = EGL_NO_SURFACE;
+static PFNEGLPRESENTATIONTIMEANDROIDPROC g_eglPresentationTimeAndroid = nullptr;
 
 static std::atomic<bool> g_active(false);
 static std::atomic<uintptr_t> g_textureId(0);
@@ -159,6 +161,9 @@ static bool CreateEglSurfaceAndContext()
     g_eglContext = context;
     g_contextReady = true;
     eglSwapInterval(g_eglDisplay, 0);
+    g_eglPresentationTimeAndroid =
+        reinterpret_cast<PFNEGLPRESENTATIONTIMEANDROIDPROC>(
+            eglGetProcAddress("eglPresentationTimeANDROID"));
     return true;
 }
 
@@ -206,6 +211,7 @@ static void ReleaseEglResources()
     g_unityRead = EGL_NO_SURFACE;
     g_configuredWidth = 0;
     g_configuredHeight = 0;
+    g_eglPresentationTimeAndroid = nullptr;
 }
 
 static void UNITY_INTERFACE_API RenderEvent(int eventId)
@@ -297,6 +303,13 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
     }
 
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    if (g_eglPresentationTimeAndroid != nullptr)
+    {
+        g_eglPresentationTimeAndroid(
+            g_eglDisplay,
+            g_eglSurface,
+            static_cast<EGLnsecsANDROID>(NowMs() * 1000000.0));
+    }
     EGLBoolean swapped = eglSwapBuffers(g_eglDisplay, g_eglSurface);
     if (!swapped)
     {
