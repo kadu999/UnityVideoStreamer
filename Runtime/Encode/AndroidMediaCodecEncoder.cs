@@ -77,10 +77,10 @@ namespace VideoStream
 
             while (true)
             {
-                AndroidJavaObject frame;
+                sbyte[] rawFrame;
                 try
                 {
-                    frame = encoder.Call<AndroidJavaObject>("pollFrame");
+                    rawFrame = encoder.Call<sbyte[]>("pollFrameBytes");
                 }
                 catch (Exception ex)
                 {
@@ -88,30 +88,37 @@ namespace VideoStream
                     return;
                 }
 
-                if (frame == null) break;
+                if (rawFrame == null || rawFrame.Length == 0) break;
 
                 try
                 {
-                    var sdata = frame.Get<sbyte[]>("data");
-                    if (sdata == null || sdata.Length == 0) continue;
+                    const int headerSize = 14;
+                    if (rawFrame.Length <= headerSize) continue;
 
-                    var data = new byte[sdata.Length];
-                    Buffer.BlockCopy(sdata, 0, data, 0, data.Length);
+                    var data = new byte[rawFrame.Length - headerSize];
+                    Buffer.BlockCopy(rawFrame, headerSize, data, 0, data.Length);
+
+                    var mimeCode = ((rawFrame[2] & 0xff) << 24) |
+                                   ((rawFrame[3] & 0xff) << 16) |
+                                   ((rawFrame[4] & 0xff) << 8) |
+                                   (rawFrame[5] & 0xff);
+                    long ptsUs = 0;
+                    for (var i = 6; i < headerSize; i++)
+                    {
+                        ptsUs = (ptsUs << 8) | (rawFrame[i] & 0xffL);
+                    }
+
                     RaiseFrameEncoded(
                         data,
-                        frame.Get<bool>("config"),
-                        frame.Get<bool>("keyFrame"),
-                        frame.Get<string>("mime"),
-                        frame.Get<long>("ptsUs"));
+                        rawFrame[0] != 0,
+                        rawFrame[1] != 0,
+                        mimeCode == 1 ? "video/hevc" : "video/avc",
+                        ptsUs);
                 }
                 catch (Exception ex)
                 {
                     Error?.Invoke("Decode encoded frame failed: " + ex.Message);
                     return;
-                }
-                finally
-                {
-                    frame.Dispose();
                 }
             }
 #endif

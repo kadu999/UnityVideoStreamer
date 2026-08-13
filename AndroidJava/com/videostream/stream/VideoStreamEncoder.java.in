@@ -159,6 +159,19 @@ public class VideoStreamEncoder {
         return outputQueue.poll();
     }
 
+    public byte[] pollFrameBytes() {
+        EncodedFrameData frame = outputQueue.poll();
+        if (frame == null) return null;
+
+        ByteBuffer buffer = ByteBuffer.allocate(frame.data.length + 14);
+        buffer.put((byte) (frame.config ? 1 : 0));
+        buffer.put((byte) (frame.keyFrame ? 1 : 0));
+        buffer.putInt("video/hevc".equals(frame.mime) ? 1 : 0);
+        buffer.putLong(frame.ptsUs);
+        buffer.put(frame.data);
+        return buffer.array();
+    }
+
     private void workerLoop() {
         try {
             while (running.get()) {
