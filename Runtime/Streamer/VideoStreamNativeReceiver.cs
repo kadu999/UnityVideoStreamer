@@ -9,11 +9,30 @@ namespace VideoStream
     {
         [SerializeField] int localPort = 9999;
         [SerializeField] string mime = "video/avc";
+        [SerializeField] bool autoStart = true;
 
         readonly byte[] _frameBuffer = new byte[32 * 1024 * 1024];
         Texture2D _outputTexture;
 
         bool _running;
+
+        public int LocalPort
+        {
+            get => localPort;
+            set => localPort = value;
+        }
+
+        public string Mime
+        {
+            get => mime;
+            set => mime = value;
+        }
+
+        public bool AutoStart
+        {
+            get => autoStart;
+            set => autoStart = value;
+        }
 
         public event Action<byte[], int, int, long> FrameDecoded;
         public event Action<Texture2D, long> FrameRendered;
@@ -21,14 +40,9 @@ namespace VideoStream
 
         void OnEnable()
         {
-            if (!_running)
+            if (autoStart)
             {
-                var udpStarted = VideoStreamNative.VSMedia_UdpStart(localPort) == 1;
-                _running = udpStarted && VideoStreamNative.VSMedia_DecoderStart(mime) == 1;
-                if (udpStarted && !_running)
-                {
-                    VideoStreamNative.VSMedia_UdpStop();
-                }
+                StartReceiver();
             }
         }
 
@@ -44,6 +58,26 @@ namespace VideoStream
         }
 
         void OnDisable()
+        {
+            StopReceiver();
+        }
+
+        public void StartReceiver()
+        {
+            if (_running)
+            {
+                return;
+            }
+
+            var udpStarted = VideoStreamNative.VSMedia_UdpStart(localPort) == 1;
+            _running = udpStarted && VideoStreamNative.VSMedia_DecoderStart(mime) == 1;
+            if (udpStarted && !_running)
+            {
+                VideoStreamNative.VSMedia_UdpStop();
+            }
+        }
+
+        public void StopReceiver()
         {
             if (_running)
             {
