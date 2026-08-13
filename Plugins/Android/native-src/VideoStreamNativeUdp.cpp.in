@@ -29,6 +29,7 @@ namespace
 
     constexpr uint16_t kFlagIdr = 0x0001;
     constexpr uint16_t kFlagConfig = 0x0002;
+    constexpr uint16_t kFlagIdrRequest = 0x0040;
     constexpr uint16_t kFlagCodecAvc = 0x0010;
     constexpr uint16_t kFlagCodecHevc = 0x0020;
 
@@ -40,6 +41,8 @@ namespace
     std::mutex gUdpReceiveMutex;
     std::deque<std::vector<uint8_t>> gReceivedPackets;
     std::atomic<int> gIdrRequestCount{0};
+    std::atomic<uint32_t> gLastSenderIp{0};
+    std::atomic<uint16_t> gLastSenderPort{0};
 
     struct PendingFrame
     {
@@ -267,6 +270,8 @@ namespace
                 continue;
             }
 
+            gLastSenderIp.store(ntohl(remote.sin_addr.s_addr));
+            gLastSenderPort.store(ntohs(remote.sin_port));
             HandleFragment(buffer.data(), static_cast<int>(length));
         }
     }
@@ -403,6 +408,8 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStop()
         gReceivedPackets.clear();
     }
     gIdrRequestCount.store(0);
+    gLastSenderIp.store(0);
+    gLastSenderPort.store(0);
     return 1;
 }
 
@@ -487,13 +494,16 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpPollPacket(
         {
             return 0;
         }
+        if (buffer == nullptr || capacity < static_cast<int>(gReceivedPackets.front().size()))
+        {
+            if (size != nullptr)
+            {
+                *size = static_cast<int>(gReceivedPackets.front().size());
+            }
+            return -1;
+        }
         packet = std::move(gReceivedPackets.front());
         gReceivedPackets.pop_front();
-    }
-
-    if (buffer == nullptr || capacity < static_cast<int>(packet.size()))
-    {
-        return 0;
     }
 
     std::memcpy(buffer, packet.data(), packet.size());
@@ -507,4 +517,40 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpPollPacket(
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpTakeIdrRequest()
 {
     return gIdrRequestCount.exchange(0);
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpSendIdrRequest()
+{
+    uint32_t ip = gLastSenderIp.load();
+    uint16_t port = gLastSenderPort.load();
+    if (ip == 0 || port == 0)
+    {
+        return 0;
+    }
+
+    sockaddr_in target{};
+    target.sin_family = AF_INET;
+    target.sin_addr.s_addr = htonl(ip);
+    target.sin_port = htons(port);
+
+    std::vector<uint8_t> packet(static_cast<size_t>(kFrameHeaderSize));
+    WriteU32(packet.data(), 0);
+    WriteU64(packet.data() + 4, 0);
+    WriteU32(packet.data() + 12, 0);
+    WriteU16(packet.data() + 16, kFlagIdrRequest);
+
+    std::lock_guard<std::mutex> lock(gUdpMutex);
+    if (gUdpSocket < 0)
+    {
+        return 0;
+    }
+
+    ssize_t result = sendto(
+        gUdpSocket,
+        packet.data(),
+        packet.size(),
+        0,
+        reinterpret_cast<const sockaddr*>(&target),
+        sizeof(target));
+    return result == static_cast<ssize_t>(packet.size()) ? 1 : 0;
 }

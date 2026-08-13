@@ -23,8 +23,12 @@ namespace VideoStream
         {
             if (!_running)
             {
-                _running = VideoStreamNative.VSMedia_UdpStart(localPort) == 1 &&
-                           VideoStreamNative.VSMedia_DecoderStart(mime) == 1;
+                var udpStarted = VideoStreamNative.VSMedia_UdpStart(localPort) == 1;
+                _running = udpStarted && VideoStreamNative.VSMedia_DecoderStart(mime) == 1;
+                if (udpStarted && !_running)
+                {
+                    VideoStreamNative.VSMedia_UdpStop();
+                }
             }
         }
 
