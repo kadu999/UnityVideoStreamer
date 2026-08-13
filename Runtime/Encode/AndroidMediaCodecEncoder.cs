@@ -1,5 +1,6 @@
 using System;
 using System.Runtime.InteropServices;
+using System.Threading;
 using UnityEngine;
 
 namespace VideoStream
@@ -47,7 +48,6 @@ namespace VideoStream
 
         bool Start(VideoStreamConfig config);
         void RenderFrame(IntPtr nativeTexturePtr, int width, int height, bool flipY);
-        void PollEncodedFrames();
         void RequestKeyFrame();
         void Stop();
     }
@@ -71,6 +71,7 @@ namespace VideoStream
         readonly object _lock = new object();
         AndroidJavaObject _javaEncoder;
         JavaCallbackProxy _proxy;
+        Thread _pollThread;
         volatile bool _running;
 
         public event Action<EncodedFrame> FrameEncoded;
@@ -110,6 +111,12 @@ namespace VideoStream
 #if UNITY_ANDROID && !UNITY_EDITOR
                     VideoStreamNative.SetActive(1);
 #endif
+                    _pollThread = new Thread(PollLoop)
+                    {
+                        IsBackground = true,
+                        Name = "VideoStreamFramePoll"
+                    };
+                    _pollThread.Start();
                     Debug.Log($"[VideoStream] Android encoder started: {config.Width}x{config.Height} {config.FrameRate}fps {config.MimeType}");
                     return true;
                 }
@@ -131,7 +138,16 @@ namespace VideoStream
 #endif
         }
 
-        public void PollEncodedFrames()
+        void PollLoop()
+        {
+            while (_running)
+            {
+                PollEncodedFramesOnce();
+                Thread.Sleep(2);
+            }
+        }
+
+        void PollEncodedFramesOnce()
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
             var encoder = _javaEncoder;
@@ -204,6 +220,11 @@ namespace VideoStream
 #if UNITY_ANDROID && !UNITY_EDITOR
                 VideoStreamNative.SetActive(0);
 #endif
+                if (_pollThread != null)
+                {
+                    _pollThread.Join(500);
+                    _pollThread = null;
+                }
                 DisposeJava();
             }
         }
