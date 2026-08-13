@@ -18,7 +18,6 @@ namespace VideoStream.URP
             public CapturePass()
             {
                 renderPassEvent = RenderPassEvent.AfterRenderingPostProcessing;
-                requiresIntermediateTexture = true;
             }
 
             public override void RecordRenderGraph(RenderGraph renderGraph, ContextContainer frameData)
@@ -38,12 +37,19 @@ namespace VideoStream.URP
                 if (!source.IsValid() || !destination.IsValid())
                     return;
 
-                var blitParameters = new RenderGraphUtils.BlitMaterialParameters(
-                    source,
-                    destination,
-                    Blitter.GetBlitMaterial(TextureDimension.Tex2D),
-                    0);
-                renderGraph.AddBlitPass(blitParameters, "VideoStream Camera Stack Capture");
+                if (renderGraph.CanAddCopyPass(source, destination))
+                {
+                    renderGraph.AddCopyPass(source, destination, "VideoStream Camera Stack Capture");
+                }
+                else
+                {
+                    var blitParameters = new RenderGraphUtils.BlitMaterialParameters(
+                        source,
+                        destination,
+                        Blitter.GetBlitMaterial(TextureDimension.Tex2D),
+                        0);
+                    renderGraph.AddBlitPass(blitParameters, "VideoStream Camera Stack Capture");
+                }
             }
 
 #if URP_COMPATIBILITY_MODE
