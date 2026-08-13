@@ -270,5 +270,5 @@ namespace VideoStream
         [DllImport(Library)]
         internal static extern void SetFrameInfo(IntPtr texture, int width, int height, int flipY);
     }
-}
 #endif
+}
