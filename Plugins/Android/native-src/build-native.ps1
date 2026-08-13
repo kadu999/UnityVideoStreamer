@@ -18,10 +18,11 @@ if (-not (Test-Path $toolchain)) {
 
 $source = Join-Path $scriptDir "UnityVideoStreamerNative.cpp.in"
 $udpSource = Join-Path $scriptDir "VideoStreamNativeUdp.cpp"
+$codecSource = Join-Path $scriptDir "VideoStreamNativeCodec.cpp"
 $targets = @(
-    @{ Abi = "arm64-v8a"; Clang = "aarch64-linux-android24-clang++.cmd" },
-    @{ Abi = "armeabi-v7a"; Clang = "armv7a-linux-androideabi24-clang++.cmd" },
-    @{ Abi = "x86_64"; Clang = "x86_64-linux-android24-clang++.cmd" }
+    @{ Abi = "arm64-v8a"; Clang = "aarch64-linux-android26-clang++.cmd" },
+    @{ Abi = "armeabi-v7a"; Clang = "armv7a-linux-androideabi26-clang++.cmd" },
+    @{ Abi = "x86_64"; Clang = "x86_64-linux-android26-clang++.cmd" }
 )
 
 if ($OnlyArm64) {
@@ -42,6 +43,7 @@ foreach ($target in $targets) {
         "-I$pluginApi" `
         $source `
         $udpSource `
+        $codecSource `
         -o $out `
         -landroid -llog -lEGL -lGLESv3 `
         "-Wl,-soname,libunity-video-streamer-native.so"
