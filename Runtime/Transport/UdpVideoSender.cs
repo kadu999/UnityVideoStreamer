@@ -59,7 +59,7 @@ namespace VideoStream
             _sendThread = new Thread(SendLoop)
             {
                 IsBackground = true,
-                Priority = ThreadPriority.Highest,
+                Priority = System.Threading.ThreadPriority.Highest,
                 Name = "UdpVideoSend"
             };
             _sendThread.Start();
