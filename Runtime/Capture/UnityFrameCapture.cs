@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.Experimental.Rendering;
 using UnityEngine.Rendering;
 
 namespace VideoStream
@@ -24,12 +25,22 @@ namespace VideoStream
             _flipY = flipY;
             _useCameraTarget = GraphicsSettings.currentRenderPipeline == null;
             _previousTarget = camera.targetTexture;
-            _target = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32)
+            var descriptor = new RenderTextureDescriptor(
+                width,
+                height,
+                GraphicsFormat.R8G8B8A8_UNorm,
+                0)
             {
-                antiAliasing = 1,
+                msaaSamples = 1,
+                dimension = TextureDimension.Tex2D,
                 useMipMap = false,
-                filterMode = FilterMode.Bilinear
+                autoGenerateMips = false,
+                sRGB = false,
+                filterMode = FilterMode.Bilinear,
+                wrapMode = TextureWrapMode.Clamp
             };
+            _target = new RenderTexture(descriptor);
+            _target.name = "VideoStreamCapture";
             _target.Create();
 
             if (_useCameraTarget)
