@@ -29,6 +29,11 @@ namespace
     constexpr uint16_t kFlagCodecAvc = 0x0010;
     constexpr uint16_t kFlagCodecHevc = 0x0020;
     constexpr uint8_t kStartCode4[] = {0, 0, 0, 1};
+    constexpr int kColorYuv420Planar = 19;
+    constexpr int kColorYuv420PackedPlanar = 20;
+    constexpr int kColorYuv420SemiPlanar = 21;
+    constexpr int kColorYuv420PackedSemiPlanar = 39;
+    constexpr int kColorYuv420Flexible = 0x7F420888;
 
     struct DecodedFrame
     {
@@ -51,6 +56,9 @@ namespace
     std::deque<DecodedFrame> gDecodedFrames;
     std::atomic<int> gDecodedWidth{0};
     std::atomic<int> gDecodedHeight{0};
+    int gColorFormat = 0;
+    int gStride = 0;
+    int gSliceHeight = 0;
 
     uint32_t ReadU16(const uint8_t* data)
     {
@@ -65,28 +73,76 @@ namespace
                static_cast<uint32_t>(data[3]);
     }
 
-    void Nv12ToRgba(
+    bool Yuv420ToRgba(
         const uint8_t* yuv,
+        int bufferSize,
         int width,
         int height,
+        int colorFormat,
+        int stride,
+        int sliceHeight,
         uint8_t* rgba)
     {
         if (yuv == nullptr || rgba == nullptr || width <= 0 || height <= 0)
         {
-            return;
+            return false;
         }
 
-        int frameSize = width * height;
+        if (stride < width)
+        {
+            stride = width;
+        }
+        if (sliceHeight < height)
+        {
+            sliceHeight = height;
+        }
+
+        bool planar = colorFormat == kColorYuv420Planar ||
+                      colorFormat == kColorYuv420PackedPlanar;
+        bool semiPlanar = colorFormat == kColorYuv420SemiPlanar ||
+                          colorFormat == kColorYuv420PackedSemiPlanar ||
+                          colorFormat == kColorYuv420Flexible ||
+                          colorFormat == 0;
+        int uvHeight = (sliceHeight + 1) / 2;
+        int uvRowStride = 0;
+        if (planar)
+        {
+            uvRowStride = (stride + 1) / 2;
+        }
+        else if (semiPlanar)
+        {
+            uvRowStride = stride;
+        }
+        else
+        {
+            return false;
+        }
+        int uvPlaneBytes = uvRowStride * uvHeight;
+        int required = stride * sliceHeight +
+                       (planar ? uvPlaneBytes * 2 : uvPlaneBytes);
+        if (bufferSize < required)
+        {
+            return false;
+        }
+
+        const uint8_t* yPlane = yuv;
+        const uint8_t* uvPlane = yuv + stride * sliceHeight;
+        const uint8_t* vPlane = planar ? uvPlane + uvPlaneBytes : nullptr;
+
         for (int y = 0; y < height; ++y)
         {
+            const uint8_t* yRow = yPlane + y * stride;
+            const uint8_t* chromaRow = uvPlane + (y / 2) * uvRowStride;
             for (int x = 0; x < width; ++x)
             {
                 int yIndex = y * width + x;
-                int uvIndex = frameSize + (y / 2) * width + (x & ~1);
+                int chromaIndex = (x / 2) * (planar ? 1 : 2);
 
-                int yy = static_cast<int>(yuv[yIndex]) - 16;
-                int uu = static_cast<int>(yuv[uvIndex]) - 128;
-                int vv = static_cast<int>(yuv[uvIndex + 1]) - 128;
+                int yy = static_cast<int>(yRow[x]) - 16;
+                int uu = static_cast<int>(chromaRow[chromaIndex]) - 128;
+                int vv = planar
+                    ? static_cast<int>(vPlane[(y / 2) * uvRowStride + (x / 2)]) - 128
+                    : static_cast<int>(chromaRow[chromaIndex + 1]) - 128;
 
                 yy = yy < 0 ? 0 : yy;
                 int r = (298 * yy + 409 * vv + 128) >> 8;
@@ -104,6 +160,7 @@ namespace
                 rgba[rgbaIndex + 3] = 255;
             }
         }
+        return true;
     }
 
     std::vector<std::vector<uint8_t>> SplitNalUnits(const std::vector<uint8_t>& data)
@@ -408,6 +465,9 @@ namespace
         gDecoderConfigured = false;
         gDecodedWidth.store(0);
         gDecodedHeight.store(0);
+        gColorFormat = 0;
+        gStride = 0;
+        gSliceHeight = 0;
     }
 
     void DecoderLoop()
@@ -435,11 +495,21 @@ namespace
                 {
                     int32_t width = 0;
                     int32_t height = 0;
+                    int32_t colorFormat = 0;
+                    int32_t stride = 0;
+                    int32_t sliceHeight = 0;
                     AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_WIDTH, &width);
                     AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_HEIGHT, &height);
+                    AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_COLOR_FORMAT, &colorFormat);
+                    AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_STRIDE, &stride);
+                    AMediaFormat_getInt32(format, "slice-height", &sliceHeight);
                     gDecodedWidth.store(width);
                     gDecodedHeight.store(height);
-                    VS_DLOGI("decoder output format %dx%d", width, height);
+                    gColorFormat = colorFormat;
+                    gStride = stride;
+                    gSliceHeight = sliceHeight;
+                    VS_DLOGI("decoder output format %dx%d color=%d stride=%d slice=%d",
+                             width, height, colorFormat, stride, sliceHeight);
                     AMediaFormat_delete(format);
                 }
                 continue;
@@ -458,14 +528,28 @@ namespace
                     frame.height = height;
                     frame.ptsUs = info.presentationTimeUs;
                     frame.rgba.resize(static_cast<size_t>(width * height * 4));
-                    Nv12ToRgba(buffer + info.offset, width, height, frame.rgba.data());
-
-                    std::lock_guard<std::mutex> lock(gOutputMutex);
-                    if (gDecodedFrames.size() >= 4)
+                    if (Yuv420ToRgba(
+                            buffer + info.offset,
+                            static_cast<int>(info.size),
+                            width,
+                            height,
+                            gColorFormat,
+                            gStride,
+                            gSliceHeight,
+                            frame.rgba.data()))
                     {
-                        gDecodedFrames.pop_front();
+                        std::lock_guard<std::mutex> lock(gOutputMutex);
+                        if (gDecodedFrames.size() >= 4)
+                        {
+                            gDecodedFrames.pop_front();
+                        }
+                        gDecodedFrames.push_back(std::move(frame));
                     }
-                    gDecodedFrames.push_back(std::move(frame));
+                    else
+                    {
+                        VS_DLOGE("YUV conversion failed color=%d stride=%d slice=%d size=%d",
+                                 gColorFormat, gStride, gSliceHeight, static_cast<int>(info.size));
+                    }
                 }
             }
 
