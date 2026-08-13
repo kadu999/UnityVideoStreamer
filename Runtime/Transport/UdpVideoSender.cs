@@ -24,6 +24,7 @@ namespace VideoStream
         int _sequence;
         int _localPort;
         long _sentDatagrams;
+        int _lastFrameId = -1;
         readonly byte[] _receiveBuffer = new byte[4096];
         EndPoint _remoteEndPoint = new IPEndPoint(IPAddress.Any, 0);
 
@@ -41,8 +42,8 @@ namespace VideoStream
                 {
                     _socket = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
                     _socket.Bind(new IPEndPoint(IPAddress.Any, localPort));
-                    _socket.ReceiveBufferSize = 256 * 1024;
-                    _socket.SendBufferSize = 256 * 1024;
+                    _socket.ReceiveBufferSize = 1024 * 1024;
+                    _socket.SendBufferSize = 1024 * 1024;
                     _localPort = ((IPEndPoint)_socket.LocalEndPoint).Port;
                     _running = true;
                 }
@@ -58,6 +59,7 @@ namespace VideoStream
             _sendThread = new Thread(SendLoop)
             {
                 IsBackground = true,
+                Priority = ThreadPriority.Highest,
                 Name = "UdpVideoSend"
             };
             _sendThread.Start();
@@ -134,6 +136,15 @@ namespace VideoStream
                 }
 
                 var packet = _packetizer.Pack(frame);
+                var frameId = FrameProtocol.ParseHeader(packet, 0, packet.Length).FrameId;
+                if (_lastFrameId >= 0 && frameId != _lastFrameId + 1)
+                {
+                    UnityEngine.Debug.LogWarning(
+                        "[VideoStream] Frame gap detected send id=" + _lastFrameId +
+                        " -> " + frameId);
+                }
+                _lastFrameId = frameId;
+
                 var sequence = Interlocked.Increment(ref _sequence);
                 var fragments = UdpFramer.Fragment(packet, sequence, frame.IsKeyFrame || frame.IsConfig);
                 foreach (var datagram in fragments)
