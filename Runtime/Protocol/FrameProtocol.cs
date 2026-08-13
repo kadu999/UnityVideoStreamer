@@ -1,8 +1,10 @@
 using System;
+using System.Collections.Generic;
+using System.Threading;
 
 namespace VideoStream
 {
-    public readonly struct FrameHeader
+    internal readonly struct FrameHeader
     {
         public readonly int FrameId;
         public readonly long PtsUs;
@@ -27,7 +29,7 @@ namespace VideoStream
         public bool IsHevc => (Flags & FrameProtocol.FlagCodecHevc) != 0;
     }
 
-    public static class FrameProtocol
+    internal static class FrameProtocol
     {
         public const int HeaderSize = 18;
 
@@ -106,6 +108,72 @@ namespace VideoStream
             var hi = (long)ReadInt32(data, offset);
             var lo = (uint)ReadInt32(data, offset + 4);
             return (hi << 32) | lo;
+        }
+    }
+
+    internal static class UdpFramer
+    {
+        public const int HeaderSize = 10;
+        public const int MaxDatagramPayload = 1400;
+        public const ushort FlagIsIdr = 0x0001;
+
+        public static List<byte[]> Fragment(byte[] packet, int sequence, bool isIdr)
+        {
+            if (packet == null) throw new ArgumentNullException(nameof(packet));
+
+            var flags = isIdr ? FlagIsIdr : (ushort)0;
+            if (packet.Length <= MaxDatagramPayload)
+            {
+                return new List<byte[]> { MakeFragment(flags, 0, 1, sequence, packet) };
+            }
+
+            var count = (packet.Length + MaxDatagramPayload - 1) / MaxDatagramPayload;
+            var fragments = new List<byte[]>(count);
+            for (var index = 0; index < count; index++)
+            {
+                var start = index * MaxDatagramPayload;
+                var end = Math.Min(start + MaxDatagramPayload, packet.Length);
+                var payload = new byte[end - start];
+                Buffer.BlockCopy(packet, start, payload, 0, payload.Length);
+                fragments.Add(MakeFragment(flags, index, count, sequence, payload));
+            }
+            return fragments;
+        }
+
+        static byte[] MakeFragment(ushort flags, int index, int count, int sequence, byte[] payload)
+        {
+            var datagram = new byte[HeaderSize + payload.Length];
+            FrameProtocol.WriteUInt16(datagram, 0, flags);
+            FrameProtocol.WriteUInt16(datagram, 2, (ushort)index);
+            FrameProtocol.WriteUInt16(datagram, 4, (ushort)count);
+            FrameProtocol.WriteInt32(datagram, 6, sequence);
+            Buffer.BlockCopy(payload, 0, datagram, HeaderSize, payload.Length);
+            return datagram;
+        }
+    }
+
+    internal sealed class FramePacketizer
+    {
+        int _frameId;
+
+        public byte[] Pack(EncodedFrame frame)
+        {
+            ushort flags = 0;
+            if (frame.IsConfig) flags |= FrameProtocol.FlagConfig;
+            if (frame.IsKeyFrame) flags |= FrameProtocol.FlagIdr;
+
+            if (string.Equals(frame.MimeType, "video/hevc", System.StringComparison.OrdinalIgnoreCase))
+            {
+                flags |= FrameProtocol.FlagCodecHevc;
+            }
+            else
+            {
+                flags |= FrameProtocol.FlagCodecAvc;
+            }
+
+            var frameId = Interlocked.Increment(ref _frameId) - 1;
+            var header = new FrameHeader(frameId, frame.PtsUs, frame.Data.Length, flags);
+            return FrameProtocol.PackFrame(header, frame.Data);
         }
     }
 }

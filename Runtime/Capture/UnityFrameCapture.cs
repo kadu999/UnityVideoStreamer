@@ -5,7 +5,7 @@ using UnityEngine.Rendering;
 
 namespace VideoStream
 {
-    public sealed class UnityFrameCapture : IDisposable
+    internal sealed class UnityFrameCapture : IDisposable
     {
         readonly Camera _camera;
         readonly RenderTexture _target;
@@ -76,6 +76,17 @@ namespace VideoStream
 
             _target.Release();
             UnityEngine.Object.Destroy(_target);
+        }
+    }
+
+    internal static class UnityVideoStreamCaptureBridge
+    {
+        static RenderTexture _targetTexture;
+
+        public static RenderTexture TargetTexture
+        {
+            get => _targetTexture;
+            set => _targetTexture = value;
         }
     }
 }
