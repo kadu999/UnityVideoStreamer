@@ -348,6 +348,13 @@ namespace VideoStream
             out long ptsUs);
 
         [DllImport(Library)]
+        internal static extern void VSMedia_DecoderConvertNv12ToRgba(
+            [In] byte[] yuv,
+            int width,
+            int height,
+            [Out] byte[] rgba);
+
+        [DllImport(Library)]
         internal static extern int VSMedia_DecoderStop();
     }
 #endif

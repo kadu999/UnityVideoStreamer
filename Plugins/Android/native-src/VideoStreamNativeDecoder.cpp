@@ -186,6 +186,47 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderDequeueFrame(
     return 1;
 }
 
+extern "C" UNITY_INTERFACE_EXPORT void VSMedia_DecoderConvertNv12ToRgba(
+    const uint8_t* yuv,
+    int width,
+    int height,
+    uint8_t* rgba)
+{
+    if (yuv == nullptr || rgba == nullptr || width <= 0 || height <= 0)
+    {
+        return;
+    }
+
+    int frameSize = width * height;
+    for (int y = 0; y < height; ++y)
+    {
+        for (int x = 0; x < width; ++x)
+        {
+            int yIndex = y * width + x;
+            int uvIndex = frameSize + (y / 2) * width + (x & ~1);
+
+            int yy = static_cast<int>(yuv[yIndex]) - 16;
+            int uu = static_cast<int>(yuv[uvIndex]) - 128;
+            int vv = static_cast<int>(yuv[uvIndex + 1]) - 128;
+
+            yy = yy < 0 ? 0 : yy;
+            int r = (298 * yy + 409 * vv + 128) >> 8;
+            int g = (298 * yy - 100 * uu - 208 * vv + 128) >> 8;
+            int b = (298 * yy + 516 * uu + 128) >> 8;
+
+            r = r < 0 ? 0 : (r > 255 ? 255 : r);
+            g = g < 0 ? 0 : (g > 255 ? 255 : g);
+            b = b < 0 ? 0 : (b > 255 ? 255 : b);
+
+            int rgbaIndex = yIndex * 4;
+            rgba[rgbaIndex] = static_cast<uint8_t>(r);
+            rgba[rgbaIndex + 1] = static_cast<uint8_t>(g);
+            rgba[rgbaIndex + 2] = static_cast<uint8_t>(b);
+            rgba[rgbaIndex + 3] = 255;
+        }
+    }
+}
+
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderStop()
 {
     if (!gDecoderRunning.exchange(false))
