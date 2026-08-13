@@ -1,11 +1,15 @@
 #include "IUnityInterface.h"
 
+#include <android/log.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <sys/socket.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -13,6 +17,9 @@
 #include <thread>
 #include <unordered_map>
 #include <vector>
+
+#define VS_UDP_LOG_TAG "VideoStreamNativeUdp"
+#define VS_UDP_LOGI(...) __android_log_print(ANDROID_LOG_INFO, VS_UDP_LOG_TAG, __VA_ARGS__)
 
 namespace
 {
@@ -33,6 +40,21 @@ namespace
     std::mutex gUdpReceiveMutex;
     std::deque<std::vector<uint8_t>> gReceivedPackets;
     std::atomic<int> gIdrRequestCount{0};
+
+    struct PendingFrame
+    {
+        int frameId = 0;
+        int size = 0;
+        int socketFd = -1;
+        std::vector<std::vector<uint8_t>> fragments;
+        std::vector<sockaddr_in> targets;
+    };
+
+    std::mutex gUdpSendMutex;
+    std::condition_variable gUdpSendCv;
+    std::deque<PendingFrame> gSendQueue;
+    std::thread gUdpSendThread;
+    std::atomic<bool> gUdpSendRunning{false};
 
     struct FragmentBuffer
     {
@@ -248,6 +270,71 @@ namespace
             HandleFragment(buffer.data(), static_cast<int>(length));
         }
     }
+
+    void UdpSendLoop()
+    {
+        while (gUdpSendRunning.load())
+        {
+            PendingFrame frame;
+            {
+                std::unique_lock<std::mutex> lock(gUdpSendMutex);
+                gUdpSendCv.wait(lock, []()
+                {
+                    return !gSendQueue.empty() || !gUdpSendRunning.load();
+                });
+                if (!gUdpSendRunning.load())
+                {
+                    break;
+                }
+                frame = std::move(gSendQueue.front());
+                gSendQueue.pop_front();
+            }
+
+            int sent = 0;
+            for (size_t i = 0; i < frame.fragments.size(); ++i)
+            {
+                const auto& datagram = frame.fragments[i];
+                for (const auto& target : frame.targets)
+                {
+                    ssize_t result = sendto(
+                        frame.socketFd,
+                        datagram.data(),
+                        datagram.size(),
+                        0,
+                        reinterpret_cast<const sockaddr*>(&target),
+                        sizeof(target));
+                    if (result == static_cast<ssize_t>(datagram.size()))
+                    {
+                        ++sent;
+                    }
+                }
+
+                if (i + 1 < frame.fragments.size())
+                {
+                    std::this_thread::sleep_for(std::chrono::microseconds(100));
+                }
+            }
+
+            if (sent > 0 && (frame.frameId <= 5 || frame.frameId % 60 == 0))
+            {
+                uint8_t head[8] = {};
+                const auto& first = frame.fragments.front();
+                const size_t payloadStart =
+                    static_cast<size_t>(kUdpFragmentHeaderSize + kFrameHeaderSize);
+                if (first.size() >= payloadStart)
+                {
+                    std::memcpy(head, first.data() + payloadStart,
+                                std::min<size_t>(sizeof(head), first.size() - payloadStart));
+                }
+                VS_UDP_LOGI("udp sent frame=%d size=%d fragments=%zu datagrams=%d targets=%zu "
+                            "head=%02x%02x%02x%02x %02x%02x%02x%02x",
+                            frame.frameId, frame.size, frame.fragments.size(), sent,
+                            frame.targets.size(),
+                            head[0], head[1], head[2], head[3],
+                            head[4], head[5], head[6], head[7]);
+            }
+        }
+    }
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStart(int localPort)
@@ -279,24 +366,38 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStart(int localPort)
 
     gUdpSocket = fd;
     gUdpRunning.store(true);
+    gUdpSendRunning.store(true);
     gUdpReceiveThread = std::thread(UdpReceiveLoop);
+    gUdpSendThread = std::thread(UdpSendLoop);
     return 1;
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStop()
 {
-    std::lock_guard<std::mutex> lock(gUdpMutex);
-    gUdpRunning.store(false);
-    if (gUdpSocket >= 0)
     {
-        close(gUdpSocket);
-        gUdpSocket = -1;
+        std::lock_guard<std::mutex> lock(gUdpMutex);
+        gUdpRunning.store(false);
+        gUdpSendRunning.store(false);
+        if (gUdpSocket >= 0)
+        {
+            close(gUdpSocket);
+            gUdpSocket = -1;
+        }
+        gUdpTargets.clear();
     }
+    gUdpSendCv.notify_all();
     if (gUdpReceiveThread.joinable())
     {
         gUdpReceiveThread.join();
     }
-    gUdpTargets.clear();
+    if (gUdpSendThread.joinable())
+    {
+        gUdpSendThread.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(gUdpSendMutex);
+        gSendQueue.clear();
+    }
     {
         std::lock_guard<std::mutex> receiveLock(gUdpReceiveMutex);
         gReceivedPackets.clear();
@@ -343,31 +444,35 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpSendFrame(
     auto packet = BuildFramePacket(frameId, ptsUs, data, size, isConfig, isKeyFrame, mime);
     auto fragments = Fragment(packet, sequence, isKeyFrame || isConfig);
 
-    std::lock_guard<std::mutex> lock(gUdpMutex);
-    if (gUdpSocket < 0 || gUdpTargets.empty())
+    PendingFrame frame;
     {
-        return 0;
-    }
-
-    int sent = 0;
-    for (const auto& datagram : fragments)
-    {
-        for (const auto& target : gUdpTargets)
+        std::lock_guard<std::mutex> lock(gUdpMutex);
+        if (gUdpSocket < 0 || gUdpTargets.empty())
         {
-            ssize_t result = sendto(
-                gUdpSocket,
-                datagram.data(),
-                datagram.size(),
-                0,
-                reinterpret_cast<const sockaddr*>(&target),
-                sizeof(target));
-            if (result == static_cast<ssize_t>(datagram.size()))
-            {
-                ++sent;
-            }
+            return 0;
         }
+        frame.frameId = frameId;
+        frame.size = size;
+        frame.socketFd = gUdpSocket;
+        frame.targets = gUdpTargets;
     }
-    return sent;
+    frame.fragments = std::move(fragments);
+
+    {
+        std::lock_guard<std::mutex> lock(gUdpSendMutex);
+        if (!gUdpSendRunning.load())
+        {
+            return 0;
+        }
+        if (gSendQueue.size() >= 120)
+        {
+            gSendQueue.pop_front();
+        }
+        gSendQueue.push_back(std::move(frame));
+    }
+    gUdpSendCv.notify_one();
+
+    return 1;
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpPollPacket(

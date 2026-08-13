@@ -52,7 +52,8 @@ static PFNEGLPRESENTATIONTIMEANDROIDPROC g_eglPresentationTimeAndroid = nullptr;
 static std::thread g_swapThread;
 static std::mutex g_swapMutex;
 static std::condition_variable g_swapCv;
-static bool g_swapPending = false;
+static uint64_t g_swapRequests = 0;
+static uint64_t g_swapCompleted = 0;
 static bool g_swapThreadRunning = false;
 
 static std::atomic<bool> g_active(false);
@@ -199,19 +200,25 @@ static void EnsureSwapThreadStarted()
     {
         while (g_active.load())
         {
-            std::unique_lock<std::mutex> lock(g_swapMutex);
-            g_swapCv.wait(lock, []()
+            uint64_t request = 0;
             {
-                return g_swapPending || !g_active.load();
-            });
-            if (!g_active.load()) break;
+                std::unique_lock<std::mutex> lock(g_swapMutex);
+                g_swapCv.wait(lock, []()
+                {
+                    return g_swapRequests > g_swapCompleted || !g_active.load();
+                });
+                if (!g_active.load()) break;
+                request = g_swapCompleted + 1;
+            }
 
-            g_swapPending = false;
-            lock.unlock();
-
+            std::lock_guard<std::mutex> eglLock(g_eglMutex);
             if (!eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
             {
                 LogEglError("eglMakeCurrent(swap thread)");
+                {
+                    std::lock_guard<std::mutex> lock(g_swapMutex);
+                    g_swapCompleted = request;
+                }
                 continue;
             }
 
@@ -234,6 +241,10 @@ static void EnsureSwapThreadStarted()
             }
 
             eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+            {
+                std::lock_guard<std::mutex> lock(g_swapMutex);
+                g_swapCompleted = request;
+            }
         }
     });
 }
@@ -245,7 +256,7 @@ static void ReleaseEglResources()
     bool joinSwapThread = false;
     {
         std::lock_guard<std::mutex> lock(g_swapMutex);
-        g_swapPending = false;
+        g_swapRequests = g_swapCompleted;
         joinSwapThread = g_swapThreadRunning;
     }
     g_swapCv.notify_all();
@@ -411,7 +422,7 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
 
     {
         std::lock_guard<std::mutex> lock(g_swapMutex);
-        g_swapPending = true;
+        g_swapRequests++;
     }
     g_swapCv.notify_one();
 

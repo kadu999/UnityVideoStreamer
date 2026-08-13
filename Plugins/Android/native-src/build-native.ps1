@@ -47,7 +47,7 @@ foreach ($target in $targets) {
         $codecSource `
         $decoderSource `
         -o $out `
-        -landroid -llog -lEGL -lGLESv3 `
+        -landroid -llog -lmediandk -lEGL -lGLESv3 `
         "-Wl,-soname,libunity-video-streamer-native.so"
 
     if ($LASTEXITCODE -ne 0) {

@@ -49,6 +49,7 @@ namespace VideoStream
 
                 _mime = config.MimeType;
                 _running = true;
+                VideoStreamNative.SetActive(1);
                 Debug.Log($"[VideoStream] Native encoder started: {config.Width}x{config.Height} {config.FrameRate}fps {config.MimeType}");
                 return true;
             }
@@ -124,6 +125,7 @@ namespace VideoStream
             {
                 if (!_running) return;
                 _running = false;
+                VideoStreamNative.SetActive(0);
                 VideoStreamNative.VSMedia_CodecStop();
                 VideoStreamNative.VSMedia_UdpStop();
             }
