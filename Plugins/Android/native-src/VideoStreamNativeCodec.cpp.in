@@ -301,6 +301,9 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CodecStart(
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_FRAME_RATE, frameRate);
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, iFrameIntervalSeconds);
     AMediaFormat_setInt32(format, "low-latency", 1);
+    AMediaFormat_setInt32(format, "operating-rate", frameRate * 3);
+    AMediaFormat_setInt32(format, "priority", 0);
+    AMediaFormat_setInt32(format, "latency", 0);
     AMediaFormat_setInt32(format, "bitrate-mode", 2);
     AMediaFormat_setInt32(format, "max-b-frames", 0);
     AMediaFormat_setInt32(format, "prepend-sps-pps-to-idr-frames", 1);
