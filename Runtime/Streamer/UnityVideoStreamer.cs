@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Concurrent;
 using System.Net;
 using System.Threading;
 using UnityEngine;
@@ -28,8 +29,10 @@ namespace VideoStream
         [SerializeField] int localPort = 9998;
         [SerializeField] bool autoDiscovery = true;
         [SerializeField] bool autoStart = true;
+        [SerializeField] bool connectFirstTarget = false;
 
         readonly object _stateLock = new object();
+        readonly ConcurrentQueue<IPEndPoint> _pendingTargets = new ConcurrentQueue<IPEndPoint>();
         IUnityVideoEncoder _encoder;
         UdpVideoSender _sender;
         UdpTargetDiscovery _discovery;
@@ -38,8 +41,12 @@ namespace VideoStream
         volatile bool _streaming;
         long _encodedFrameLogCount;
         float _nextCaptureTime;
+        bool _connected;
 
         public event Action<string> OnError;
+        public event Action<bool> SearchingChanged;
+        public event Action<IPEndPoint> TargetDiscovered;
+        public event Action<IPEndPoint> Connected;
 
         public bool IsStreaming => _streaming;
         public string MimeType => useHevc ? "video/hevc" : "video/avc";
@@ -74,6 +81,12 @@ namespace VideoStream
             get => useHevc;
             set => useHevc = value;
         }
+        public bool ConnectFirstTarget
+        {
+            get => connectFirstTarget;
+            set => connectFirstTarget = value;
+        }
+        public bool IsSearching => _discovery != null;
 
         void OnEnable()
         {
@@ -88,6 +101,76 @@ namespace VideoStream
         void OnDestroy()
         {
             StopStreaming();
+        }
+
+        void Update()
+        {
+            while (_pendingTargets.TryDequeue(out var endpoint))
+            {
+                TargetDiscovered?.Invoke(endpoint);
+                if (connectFirstTarget && !_connected)
+                {
+                    ConnectTo(endpoint);
+                    break;
+                }
+
+                _sender?.AddTarget(endpoint);
+                _encoder?.RequestKeyFrame();
+            }
+        }
+
+        public bool StartSearching()
+        {
+            StopStreaming();
+            StopSearching();
+            ClearPendingTargets();
+            _connected = false;
+
+            _discovery = new UdpTargetDiscovery();
+            _discovery.TargetDiscovered += HandleTargetDiscovered;
+            if (!_discovery.Start())
+            {
+                const string message = "Discovery bind failed on UDP 9997";
+                RaiseError(message);
+                _discovery.TargetDiscovered -= HandleTargetDiscovered;
+                _discovery.Dispose();
+                _discovery = null;
+                return false;
+            }
+
+            SearchingChanged?.Invoke(true);
+            return true;
+        }
+
+        public void StopSearching()
+        {
+            if (_discovery == null) return;
+
+            _discovery.TargetDiscovered -= HandleTargetDiscovered;
+            _discovery.Dispose();
+            _discovery = null;
+            SearchingChanged?.Invoke(false);
+        }
+
+        public void ConnectTo(IPEndPoint endpoint)
+        {
+            if (endpoint == null) return;
+
+            StopSearching();
+            ClearPendingTargets();
+            _connected = true;
+
+            targetAddress = endpoint.Address.ToString();
+            targetPort = endpoint.Port;
+            StartStreaming();
+            if (_streaming)
+            {
+                Connected?.Invoke(endpoint);
+            }
+            else
+            {
+                _connected = false;
+            }
         }
 
         public void StartStreaming()
@@ -209,7 +292,7 @@ namespace VideoStream
         {
             lock (_stateLock)
             {
-                if (!_streaming && _encoder == null && _sender == null && _capture == null) return;
+                if (!_streaming && _encoder == null && _sender == null && _capture == null && _discovery == null) return;
                 _streaming = false;
 
                 if (_captureCoroutine != null)
@@ -243,6 +326,7 @@ namespace VideoStream
                 _discovery.TargetDiscovered -= HandleTargetDiscovered;
                 _discovery.Dispose();
                 _discovery = null;
+                SearchingChanged?.Invoke(false);
             }
 
             if (_sender != null)
@@ -293,8 +377,14 @@ namespace VideoStream
 
         void HandleTargetDiscovered(IPEndPoint endpoint)
         {
-            _sender?.AddTarget(endpoint);
-            _encoder?.RequestKeyFrame();
+            _pendingTargets.Enqueue(endpoint);
+        }
+
+        void ClearPendingTargets()
+        {
+            while (_pendingTargets.TryDequeue(out _))
+            {
+            }
         }
 
         void HandleEncoderError(string message)
