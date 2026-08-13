@@ -11,8 +11,10 @@
 
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <mutex>
+#include <thread>
 
 #ifndef GL_FRAMEBUFFER_SRGB
 #define GL_FRAMEBUFFER_SRGB 0x8DB9
@@ -43,6 +45,12 @@ static EGLContext g_unityContext = EGL_NO_CONTEXT;
 static EGLSurface g_unityDraw = EGL_NO_SURFACE;
 static EGLSurface g_unityRead = EGL_NO_SURFACE;
 static PFNEGLPRESENTATIONTIMEANDROIDPROC g_eglPresentationTimeAndroid = nullptr;
+
+static std::thread g_swapThread;
+static std::mutex g_swapMutex;
+static std::condition_variable g_swapCv;
+static bool g_swapPending = false;
+static bool g_swapThreadRunning = false;
 
 static std::atomic<bool> g_active(false);
 static std::atomic<uintptr_t> g_textureId(0);
@@ -167,8 +175,75 @@ static bool CreateEglSurfaceAndContext()
     return true;
 }
 
+static void EnsureSwapThreadStarted()
+{
+    std::lock_guard<std::mutex> lock(g_swapMutex);
+    if (g_swapThreadRunning) return;
+
+    g_swapThreadRunning = true;
+    g_swapThread = std::thread([]()
+    {
+        while (g_active.load())
+        {
+            std::unique_lock<std::mutex> lock(g_swapMutex);
+            g_swapCv.wait(lock, []()
+            {
+                return g_swapPending || !g_active.load();
+            });
+            if (!g_active.load()) break;
+
+            g_swapPending = false;
+            lock.unlock();
+
+            if (!eglMakeCurrent(g_eglDisplay, g_eglSurface, g_eglSurface, g_eglContext))
+            {
+                LogEglError("eglMakeCurrent(swap thread)");
+                continue;
+            }
+
+            EGLBoolean swapped = eglSwapBuffers(g_eglDisplay, g_eglSurface);
+            if (!swapped)
+            {
+                LogEglError("eglSwapBuffers");
+            }
+            else
+            {
+                g_renderedFrames++;
+                if (g_renderedFrames <= 5 || g_renderedFrames % 60 == 0)
+                {
+                    LOGI("Rendered frame %d (%dx%d flip=%d)",
+                         g_renderedFrames,
+                         g_frameWidth.load(),
+                         g_frameHeight.load(),
+                         g_frameFlipY.load());
+                }
+            }
+
+            eglMakeCurrent(g_eglDisplay, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+        }
+    });
+}
+
 static void ReleaseEglResources()
 {
+    g_active.store(false);
+
+    bool joinSwapThread = false;
+    {
+        std::lock_guard<std::mutex> lock(g_swapMutex);
+        g_swapPending = false;
+        joinSwapThread = g_swapThreadRunning;
+    }
+    g_swapCv.notify_all();
+    if (joinSwapThread && g_swapThread.joinable())
+    {
+        g_swapThread.join();
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_swapMutex);
+        g_swapThreadRunning = false;
+    }
+
     std::lock_guard<std::mutex> lock(g_eglMutex);
 
     if (g_contextReady)
@@ -222,6 +297,7 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
 
     if (!g_nativeWindow) return;
     if (!g_contextReady && !CreateEglSurfaceAndContext()) return;
+    EnsureSwapThreadStarted();
 
     uintptr_t texture = g_textureId.load();
     int width = g_frameWidth.load();
@@ -310,20 +386,7 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
             g_eglSurface,
             static_cast<EGLnsecsANDROID>(NowMs() * 1000000.0));
     }
-    EGLBoolean swapped = eglSwapBuffers(g_eglDisplay, g_eglSurface);
-    if (!swapped)
-    {
-        LogEglError("eglSwapBuffers");
-    }
-    else
-    {
-        g_renderedFrames++;
-        if (g_renderedFrames <= 5 || g_renderedFrames % 60 == 0)
-        {
-            LOGI("Rendered frame %d (%dx%d flip=%d)",
-                 g_renderedFrames, width, height, flipY);
-        }
-    }
+    glFlush();
 
     if (!eglMakeCurrent(unityDisplay, unityDraw, unityRead, unityContext))
     {
@@ -331,12 +394,18 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
     }
     double tRestore0 = NowMs();
 
+    {
+        std::lock_guard<std::mutex> lock(g_swapMutex);
+        g_swapPending = true;
+    }
+    g_swapCv.notify_one();
+
     if (g_renderedFrames <= 5 || g_renderedFrames % 60 == 0)
     {
         LOGI("Render timing make=%.2fms blit=%.2fms swap=%.2fms restore=%.2fms total=%.2fms",
              tBlit0 - tMakeCurrent0,
              tSwap0 - tBlit0,
-             tRestore0 - tSwap0,
+             NowMs() - tRestore0,
              tRestore0 - tMakeCurrent0,
              tRestore0 - tMakeCurrent0);
     }
