@@ -37,8 +37,8 @@ namespace VideoStream
             long ptsUs,
             [In] byte[] data,
             int size,
-            bool isConfig,
-            bool isKeyFrame,
+            [MarshalAs(UnmanagedType.I1)] bool isConfig,
+            [MarshalAs(UnmanagedType.I1)] bool isKeyFrame,
             [MarshalAs(UnmanagedType.LPStr)] string mime,
             uint sequence);
 
@@ -71,8 +71,8 @@ namespace VideoStream
             [Out] byte[] buffer,
             int capacity,
             out int size,
-            out bool isConfig,
-            out bool isKeyFrame,
+            [MarshalAs(UnmanagedType.I1)] out bool isConfig,
+            [MarshalAs(UnmanagedType.I1)] out bool isKeyFrame,
             out long ptsUs);
 
         [DllImport(Library)]
