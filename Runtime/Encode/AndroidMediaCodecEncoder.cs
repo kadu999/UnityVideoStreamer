@@ -293,6 +293,15 @@ namespace VideoStream
             uint sequence);
 
         [DllImport(Library)]
+        internal static extern int VSMedia_UdpPollPacket(
+            [Out] byte[] buffer,
+            int capacity,
+            out int size);
+
+        [DllImport(Library)]
+        internal static extern int VSMedia_UdpTakeIdrRequest();
+
+        [DllImport(Library)]
         internal static extern int VSMedia_CodecStart(
             int width,
             int height,

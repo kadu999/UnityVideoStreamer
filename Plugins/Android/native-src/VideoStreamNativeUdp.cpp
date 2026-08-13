@@ -8,7 +8,10 @@
 #include <atomic>
 #include <cstdint>
 #include <cstring>
+#include <deque>
 #include <mutex>
+#include <thread>
+#include <unordered_map>
 #include <vector>
 
 namespace
@@ -26,6 +29,26 @@ namespace
     std::vector<sockaddr_in> gUdpTargets;
     int gUdpSocket = -1;
     std::atomic<bool> gUdpRunning{false};
+    std::thread gUdpReceiveThread;
+    std::mutex gUdpReceiveMutex;
+    std::deque<std::vector<uint8_t>> gReceivedPackets;
+    std::atomic<int> gIdrRequestCount{0};
+
+    struct FragmentBuffer
+    {
+        int count = 0;
+        std::vector<std::vector<uint8_t>> fragments;
+        int received = 0;
+        int64_t lastUpdateMs = 0;
+    };
+
+    std::unordered_map<uint32_t, FragmentBuffer> gFragmentBuffers;
+
+    int64_t NowMs()
+    {
+        return std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
 
     void WriteU16(uint8_t* dst, uint16_t value)
     {
@@ -109,6 +132,122 @@ namespace
         }
         return fragments;
     }
+
+    void EnqueueReceivedPacket(std::vector<uint8_t> packet)
+    {
+        if (packet.size() < static_cast<size_t>(kFrameHeaderSize))
+        {
+            return;
+        }
+
+        uint32_t flags = (static_cast<uint32_t>(packet[16]) << 8) |
+                         static_cast<uint32_t>(packet[17]);
+        if ((flags & 0x0040) != 0)
+        {
+            gIdrRequestCount.fetch_add(1);
+        }
+
+        std::lock_guard<std::mutex> lock(gUdpReceiveMutex);
+        gReceivedPackets.push_back(std::move(packet));
+    }
+
+    void HandleFragment(const uint8_t* data, int length)
+    {
+        if (length < kUdpFragmentHeaderSize)
+        {
+            return;
+        }
+
+        uint16_t index = static_cast<uint16_t>(
+            (static_cast<uint32_t>(data[2]) << 8) | data[3]);
+        uint16_t count = static_cast<uint16_t>(
+            (static_cast<uint32_t>(data[4]) << 8) | data[5]);
+        uint32_t sequence = (static_cast<uint32_t>(data[6]) << 24) |
+                            (static_cast<uint32_t>(data[7]) << 16) |
+                            (static_cast<uint32_t>(data[8]) << 8) |
+                            static_cast<uint32_t>(data[9]);
+
+        int payloadSize = length - kUdpFragmentHeaderSize;
+        if (count <= 0 || index >= count || payloadSize <= 0)
+        {
+            return;
+        }
+
+        std::vector<uint8_t> payload(data + kUdpFragmentHeaderSize, data + length);
+        if (count == 1)
+        {
+            EnqueueReceivedPacket(std::move(payload));
+            return;
+        }
+
+        auto it = gFragmentBuffers.find(sequence);
+        if (it == gFragmentBuffers.end() || it->second.count != count)
+        {
+            FragmentBuffer buffer;
+            buffer.count = count;
+            buffer.fragments.resize(count);
+            buffer.lastUpdateMs = NowMs();
+            it = gFragmentBuffers.emplace(sequence, std::move(buffer)).first;
+        }
+
+        FragmentBuffer& buffer = it->second;
+        if (!buffer.fragments[index].empty())
+        {
+            return;
+        }
+
+        buffer.fragments[index] = std::move(payload);
+        buffer.received++;
+        buffer.lastUpdateMs = NowMs();
+
+        if (buffer.received != count)
+        {
+            return;
+        }
+
+        int totalSize = 0;
+        for (const auto& fragment : buffer.fragments)
+        {
+            totalSize += static_cast<int>(fragment.size());
+        }
+
+        std::vector<uint8_t> packet;
+        packet.reserve(totalSize);
+        for (const auto& fragment : buffer.fragments)
+        {
+            packet.insert(packet.end(), fragment.begin(), fragment.end());
+        }
+        gFragmentBuffers.erase(sequence);
+        EnqueueReceivedPacket(std::move(packet));
+    }
+
+    void UdpReceiveLoop()
+    {
+        std::vector<uint8_t> buffer(64 * 1024);
+        sockaddr_in remote{};
+        socklen_t remoteSize = sizeof(remote);
+
+        while (gUdpRunning.load())
+        {
+            ssize_t length = recvfrom(
+                gUdpSocket,
+                buffer.data(),
+                buffer.size(),
+                0,
+                reinterpret_cast<sockaddr*>(&remote),
+                &remoteSize);
+            if (length <= 0)
+            {
+                if (!gUdpRunning.load())
+                {
+                    break;
+                }
+                continue;
+            }
+
+            HandleFragment(buffer.data(), static_cast<int>(length));
+        }
+    }
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStart(int localPort)
@@ -140,6 +279,7 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStart(int localPort)
 
     gUdpSocket = fd;
     gUdpRunning.store(true);
+    gUdpReceiveThread = std::thread(UdpReceiveLoop);
     return 1;
 }
 
@@ -152,7 +292,16 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStop()
         close(gUdpSocket);
         gUdpSocket = -1;
     }
+    if (gUdpReceiveThread.joinable())
+    {
+        gUdpReceiveThread.join();
+    }
     gUdpTargets.clear();
+    {
+        std::lock_guard<std::mutex> receiveLock(gUdpReceiveMutex);
+        gReceivedPackets.clear();
+    }
+    gIdrRequestCount.store(0);
     return 1;
 }
 
@@ -219,4 +368,38 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpSendFrame(
         }
     }
     return sent;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpPollPacket(
+    uint8_t* buffer,
+    int capacity,
+    int* size)
+{
+    std::vector<uint8_t> packet;
+    {
+        std::lock_guard<std::mutex> lock(gUdpReceiveMutex);
+        if (gReceivedPackets.empty())
+        {
+            return 0;
+        }
+        packet = std::move(gReceivedPackets.front());
+        gReceivedPackets.pop_front();
+    }
+
+    if (buffer == nullptr || capacity < static_cast<int>(packet.size()))
+    {
+        return 0;
+    }
+
+    std::memcpy(buffer, packet.data(), packet.size());
+    if (size != nullptr)
+    {
+        *size = static_cast<int>(packet.size());
+    }
+    return 1;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpTakeIdrRequest()
+{
+    return gIdrRequestCount.exchange(0);
 }
