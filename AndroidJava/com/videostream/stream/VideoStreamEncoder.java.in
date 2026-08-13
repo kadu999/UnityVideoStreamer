@@ -70,14 +70,6 @@ public class VideoStreamEncoder {
             format.setInteger(MediaFormat.KEY_FRAME_RATE, frameRate);
             format.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalSeconds);
             format.setInteger(MediaFormat.KEY_LOW_LATENCY, 1);
-            if ("video/avc".equals(mimeType)) {
-                format.setInteger(
-                        MediaFormat.KEY_PROFILE,
-                        MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline);
-                format.setInteger(
-                        MediaFormat.KEY_BITRATE_MODE,
-                        MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR);
-            }
 
             codec = MediaCodec.createEncoderByType(mimeType);
             codec.configure(format, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE);
