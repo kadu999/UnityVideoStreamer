@@ -1,0 +1,27 @@
+{
+    "name": "VideoStream.Editor.URP",
+    "rootNamespace": "VideoStream.Editor.URP",
+    "references": [
+        "VideoStream.URP",
+        "Unity.RenderPipelines.Universal.Runtime"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "VIDEOSTREAM_URP"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.unity.render-pipelines.universal",
+            "expression": "17.0.0",
+            "define": "VIDEOSTREAM_URP"
+        }
+    ],
+    "noEngineReferences": false
+}

@@ -3,6 +3,7 @@ using System.Collections;
 using System.Net;
 using System.Threading;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace VideoStream
 {
@@ -187,6 +188,11 @@ namespace VideoStream
                     RaiseError("Capture setup failed: " + ex.Message);
                     CleanupStreaming();
                     return;
+                }
+
+                if (GraphicsSettings.currentRenderPipeline != null)
+                {
+                    Debug.Log("[VideoStream] URP capture uses the VideoStream Camera Capture renderer feature (GPU copy).");
                 }
 
                 _packetizer = new FramePacketizer();

@@ -1,5 +1,6 @@
 using System;
 using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace VideoStream
 {
@@ -8,6 +9,7 @@ namespace VideoStream
         readonly Camera _camera;
         readonly RenderTexture _target;
         readonly bool _flipY;
+        readonly bool _useCameraTarget;
         readonly RenderTexture _previousTarget;
 
         bool _disposed;
@@ -20,6 +22,7 @@ namespace VideoStream
 
             _camera = camera;
             _flipY = flipY;
+            _useCameraTarget = GraphicsSettings.currentRenderPipeline == null;
             _previousTarget = camera.targetTexture;
             _target = new RenderTexture(width, height, 24, RenderTextureFormat.ARGB32)
             {
@@ -28,7 +31,15 @@ namespace VideoStream
                 filterMode = FilterMode.Bilinear
             };
             _target.Create();
-            camera.targetTexture = _target;
+
+            if (_useCameraTarget)
+            {
+                camera.targetTexture = _target;
+            }
+            else
+            {
+                UnityVideoStreamCaptureBridge.TargetTexture = _target;
+            }
         }
 
         public void RenderFrameToEncoder(IUnityVideoEncoder encoder)
@@ -42,9 +53,14 @@ namespace VideoStream
             if (_disposed) return;
             _disposed = true;
 
-            if (_camera != null && ReferenceEquals(_camera.targetTexture, _target))
+            if (_useCameraTarget && _camera != null && ReferenceEquals(_camera.targetTexture, _target))
             {
                 _camera.targetTexture = _previousTarget;
+            }
+
+            if (!_useCameraTarget && ReferenceEquals(UnityVideoStreamCaptureBridge.TargetTexture, _target))
+            {
+                UnityVideoStreamCaptureBridge.TargetTexture = null;
             }
 
             _target.Release();
