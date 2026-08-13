@@ -35,7 +35,7 @@ namespace VideoStream
                 dimension = TextureDimension.Tex2D,
                 useMipMap = false,
                 autoGenerateMips = false,
-                sRGB = false
+                sRGB = true
             };
             _target = new RenderTexture(descriptor);
             _target.name = "VideoStreamCapture";
