@@ -35,12 +35,12 @@ namespace VideoStream
                 dimension = TextureDimension.Tex2D,
                 useMipMap = false,
                 autoGenerateMips = false,
-                sRGB = false,
-                filterMode = FilterMode.Bilinear,
-                wrapMode = TextureWrapMode.Clamp
+                sRGB = false
             };
             _target = new RenderTexture(descriptor);
             _target.name = "VideoStreamCapture";
+            _target.filterMode = FilterMode.Bilinear;
+            _target.wrapMode = TextureWrapMode.Clamp;
             _target.Create();
 
             if (_useCameraTarget)
