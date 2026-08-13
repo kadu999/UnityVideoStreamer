@@ -53,7 +53,6 @@ namespace VideoStream
                 return;
             }
 
-            VideoStreamNative.VSMedia_DecoderProcessPackets();
             DrainDecodedFrames();
         }
 

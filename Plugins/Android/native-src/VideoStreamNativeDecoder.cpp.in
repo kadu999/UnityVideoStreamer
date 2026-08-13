@@ -21,6 +21,7 @@
 
 extern "C" int VSMedia_UdpPollPacket(uint8_t* buffer, int capacity, int* size);
 extern "C" int VSMedia_UdpSendIdrRequest();
+extern "C" int VSMedia_DecoderProcessPackets();
 
 namespace
 {
@@ -35,6 +36,8 @@ namespace
     constexpr int kColorYuv420SemiPlanar = 21;
     constexpr int kColorYuv420PackedSemiPlanar = 39;
     constexpr int kColorYuv420Flexible = 0x7F420888;
+    constexpr int kPreviewMaxWidth = 640;
+    constexpr int kPreviewMaxHeight = 360;
 
     struct DecodedFrame
     {
@@ -48,10 +51,13 @@ namespace
     AMediaCodec* gDecoder = nullptr;
     std::thread gDecoderThread;
     std::atomic<bool> gDecoderRunning{false};
+    std::thread gProcessThread;
     bool gDecoderActive = false;
     bool gDecoderConfigured = false;
     std::string gMime = "video/avc";
     std::vector<uint8_t> gCsd;
+    std::vector<std::vector<uint8_t>> gDecoderCsdBuffers;
+    std::vector<uint8_t> gConfiguredCsd;
     int32_t gLastFrameId = -1;
     bool gDamaged = false;
     int64_t gLastIdrRequestMs = 0;
@@ -91,6 +97,8 @@ namespace
         int colorFormat,
         int stride,
         int sliceHeight,
+        int outWidth,
+        int outHeight,
         uint8_t* rgba)
     {
         if (yuv == nullptr || rgba == nullptr || width <= 0 || height <= 0)
@@ -139,19 +147,21 @@ namespace
         const uint8_t* uvPlane = yuv + stride * sliceHeight;
         const uint8_t* vPlane = planar ? uvPlane + uvPlaneBytes : nullptr;
 
-        for (int y = 0; y < height; ++y)
+        for (int y = 0; y < outHeight; ++y)
         {
-            const uint8_t* yRow = yPlane + y * stride;
-            const uint8_t* chromaRow = uvPlane + (y / 2) * uvRowStride;
-            for (int x = 0; x < width; ++x)
+            int srcY = y * height / outHeight;
+            const uint8_t* yRow = yPlane + srcY * stride;
+            const uint8_t* chromaRow = uvPlane + (srcY / 2) * uvRowStride;
+            for (int x = 0; x < outWidth; ++x)
             {
-                int yIndex = y * width + x;
-                int chromaIndex = (x / 2) * (planar ? 1 : 2);
+                int srcX = x * width / outWidth;
+                int yIndex = y * outWidth + x;
+                int chromaIndex = (srcX / 2) * (planar ? 1 : 2);
 
-                int yy = static_cast<int>(yRow[x]) - 16;
+                int yy = static_cast<int>(yRow[srcX]) - 16;
                 int uu = static_cast<int>(chromaRow[chromaIndex]) - 128;
                 int vv = planar
-                    ? static_cast<int>(vPlane[(y / 2) * uvRowStride + (x / 2)]) - 128
+                    ? static_cast<int>(vPlane[(srcY / 2) * uvRowStride + (srcX / 2)]) - 128
                     : static_cast<int>(chromaRow[chromaIndex + 1]) - 128;
 
                 yy = yy < 0 ? 0 : yy;
@@ -271,194 +281,6 @@ namespace
         return out;
     }
 
-    class BitReader
-    {
-    public:
-        BitReader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
-
-        uint32_t ReadBits(int count)
-        {
-            uint32_t value = 0;
-            for (int i = 0; i < count; ++i)
-            {
-                if (bitIndex_ >= size_ * 8)
-                {
-                    failed_ = true;
-                    return 0;
-                }
-                int byteIndex = bitIndex_ >> 3;
-                int bit = 7 - (bitIndex_ & 7);
-                value = (value << 1) | ((data_[byteIndex] >> bit) & 1);
-                ++bitIndex_;
-            }
-            return value;
-        }
-
-        void SkipBits(int count)
-        {
-            for (int i = 0; i < count; ++i)
-            {
-                ReadBits(1);
-            }
-        }
-
-        uint32_t ReadUe()
-        {
-            int leadingZeros = 0;
-            while (ReadBits(1) == 0)
-            {
-                ++leadingZeros;
-                if (leadingZeros > 31)
-                {
-                    failed_ = true;
-                    return 0;
-                }
-            }
-            return leadingZeros == 0
-                ? 0
-                : ((uint32_t{1} << leadingZeros) - 1) + ReadBits(leadingZeros);
-        }
-
-        int32_t ReadSe()
-        {
-            uint32_t codeNum = ReadUe();
-            return (codeNum & 1) == 0
-                ? -static_cast<int32_t>(codeNum / 2)
-                : static_cast<int32_t>((codeNum + 1) / 2);
-        }
-
-        bool Failed() const { return failed_; }
-
-    private:
-        const uint8_t* data_;
-        size_t size_;
-        size_t bitIndex_ = 0;
-        bool failed_ = false;
-    };
-
-    void SkipScalingList(BitReader& reader, int size)
-    {
-        int lastScale = 8;
-        int nextScale = 8;
-        for (int i = 0; i < size; ++i)
-        {
-            if (nextScale != 0)
-            {
-                int deltaScale = reader.ReadSe();
-                nextScale = (lastScale + deltaScale + 256) % 256;
-            }
-            if (nextScale != 0)
-            {
-                lastScale = nextScale;
-            }
-        }
-    }
-
-    bool ParseH264Resolution(
-        const std::vector<uint8_t>& sps,
-        int* outWidth,
-        int* outHeight)
-    {
-        if (sps.empty())
-        {
-            return false;
-        }
-
-        BitReader reader(sps.data(), sps.size());
-        int profileIdc = static_cast<int>(reader.ReadBits(8));
-        reader.SkipBits(8);
-        reader.SkipBits(8);
-        reader.ReadUe();
-
-        int chromaFormatIdc = 1;
-        bool separateColourPlane = false;
-        if (profileIdc == 100 || profileIdc == 110 || profileIdc == 122 ||
-            profileIdc == 244 || profileIdc == 44 || profileIdc == 83 ||
-            profileIdc == 86 || profileIdc == 118 || profileIdc == 128 ||
-            profileIdc == 138 || profileIdc == 139 || profileIdc == 134 ||
-            profileIdc == 135)
-        {
-            chromaFormatIdc = static_cast<int>(reader.ReadUe());
-            if (chromaFormatIdc == 3)
-            {
-                separateColourPlane = reader.ReadBits(1) == 1;
-            }
-            reader.ReadUe();
-            reader.ReadUe();
-            reader.ReadBits(1);
-            if (reader.ReadBits(1) == 1)
-            {
-                for (int i = 0; i < 8; ++i)
-                {
-                    if (reader.ReadBits(1) == 1)
-                    {
-                        SkipScalingList(reader, i < 6 ? 16 : 64);
-                    }
-                }
-            }
-        }
-
-        reader.ReadUe();
-        int picOrderCntType = static_cast<int>(reader.ReadUe());
-        if (picOrderCntType == 0)
-        {
-            reader.ReadUe();
-        }
-        else if (picOrderCntType == 1)
-        {
-            reader.ReadBits(1);
-            reader.ReadSe();
-            reader.ReadSe();
-            int count = static_cast<int>(reader.ReadUe());
-            for (int i = 0; i < count; ++i)
-            {
-                reader.ReadSe();
-            }
-        }
-
-        reader.ReadUe();
-        reader.ReadBits(1);
-        int widthInMbs = static_cast<int>(reader.ReadUe()) + 1;
-        int heightInMapUnits = static_cast<int>(reader.ReadUe()) + 1;
-        int frameMbsOnly = static_cast<int>(reader.ReadBits(1));
-        if (frameMbsOnly == 0)
-        {
-            reader.ReadBits(1);
-        }
-        reader.ReadBits(1);
-
-        int cropLeft = 0;
-        int cropRight = 0;
-        int cropTop = 0;
-        int cropBottom = 0;
-        if (reader.ReadBits(1) == 1)
-        {
-            cropLeft = static_cast<int>(reader.ReadUe());
-            cropRight = static_cast<int>(reader.ReadUe());
-            cropTop = static_cast<int>(reader.ReadUe());
-            cropBottom = static_cast<int>(reader.ReadUe());
-        }
-
-        if (reader.Failed())
-        {
-            return false;
-        }
-
-        int chromaArrayType = separateColourPlane ? 0 : chromaFormatIdc;
-        int cropUnitX = chromaArrayType == 2 ? 2 : (chromaArrayType == 3 ? 1 : 1);
-        int cropUnitY = chromaArrayType == 2 ? 2 : (chromaArrayType == 3 ? 1 : 2 - frameMbsOnly);
-        int width = widthInMbs * 16 - (cropLeft + cropRight) * cropUnitX;
-        int height = (2 - frameMbsOnly) * heightInMapUnits * 16 - (cropTop + cropBottom) * cropUnitY;
-        if (width <= 0 || height <= 0)
-        {
-            return false;
-        }
-
-        *outWidth = width;
-        *outHeight = height;
-        return true;
-    }
-
     void StopDecoderLocked()
     {
         if (gDecoderThread.joinable())
@@ -472,6 +294,8 @@ namespace
             AMediaCodec_delete(gDecoder);
             gDecoder = nullptr;
         }
+        gDecoderCsdBuffers.clear();
+        gConfiguredCsd.clear();
         gDecoderConfigured = false;
         gDecodedWidth.store(0);
         gDecodedHeight.store(0);
@@ -493,11 +317,6 @@ namespace
 
             AMediaCodecBufferInfo info{};
             ssize_t index = AMediaCodec_dequeueOutputBuffer(codec, &info, 10000);
-            if (index < 0)
-            {
-                continue;
-            }
-
             if (index == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED)
             {
                 AMediaFormat* format = AMediaCodec_getOutputFormat(codec);
@@ -524,6 +343,10 @@ namespace
                 }
                 continue;
             }
+            if (index < 0)
+            {
+                continue;
+            }
 
             size_t bufferSize = 0;
             uint8_t* buffer = AMediaCodec_getOutputBuffer(codec, index, &bufferSize);
@@ -534,10 +357,20 @@ namespace
                 if (width > 0 && height > 0)
                 {
                     DecodedFrame frame;
-                    frame.width = width;
-                    frame.height = height;
+                    int outWidth = width;
+                    int outHeight = height;
+                    if (width > kPreviewMaxWidth || height > kPreviewMaxHeight)
+                    {
+                        float scale = std::min(
+                            static_cast<float>(kPreviewMaxWidth) / width,
+                            static_cast<float>(kPreviewMaxHeight) / height);
+                        outWidth = std::max(1, static_cast<int>(width * scale));
+                        outHeight = std::max(1, static_cast<int>(height * scale));
+                    }
+                    frame.width = outWidth;
+                    frame.height = outHeight;
                     frame.ptsUs = info.presentationTimeUs;
-                    frame.rgba.resize(static_cast<size_t>(width * height * 4));
+                    frame.rgba.resize(static_cast<size_t>(outWidth * outHeight * 4));
                     if (Yuv420ToRgba(
                             buffer + info.offset,
                             static_cast<int>(info.size),
@@ -546,6 +379,8 @@ namespace
                             gColorFormat,
                             gStride,
                             gSliceHeight,
+                            outWidth,
+                            outHeight,
                             frame.rgba.data()))
                     {
                         std::lock_guard<std::mutex> lock(gOutputMutex);
@@ -574,6 +409,10 @@ namespace
         {
             return false;
         }
+        if (gDecoderConfigured && gConfiguredCsd == gCsd)
+        {
+            return true;
+        }
 
         auto nalus = SplitNalUnits(gCsd);
         if (nalus.empty())
@@ -593,17 +432,6 @@ namespace
 
         int width = 1920;
         int height = 1080;
-        if (!isHevc)
-        {
-            for (const auto& nalu : nalus)
-            {
-                if (!nalu.empty() && (nalu[0] & 0x1F) == 7)
-                {
-                    ParseH264Resolution(nalu, &width, &height);
-                    break;
-                }
-            }
-        }
 
         StopDecoderLocked();
 
@@ -620,12 +448,20 @@ namespace
         AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
         AMediaFormat_setInt32(format, "low-latency", 1);
 
+        gDecoderCsdBuffers.clear();
         int csdCount = std::min(static_cast<int>(nalus.size()), isHevc ? 3 : 2);
         for (int i = 0; i < csdCount; ++i)
         {
-            auto csdBuffer = WithStartCode(nalus[i]);
+            gDecoderCsdBuffers.push_back(WithStartCode(nalus[i]));
+        }
+        for (int i = 0; i < csdCount; ++i)
+        {
             std::string key = "csd-" + std::to_string(i);
-            AMediaFormat_setBuffer(format, key.c_str(), csdBuffer.data(), csdBuffer.size());
+            AMediaFormat_setBuffer(
+                format,
+                key.c_str(),
+                gDecoderCsdBuffers[i].data(),
+                gDecoderCsdBuffers[i].size());
         }
 
         media_status_t status = AMediaCodec_configure(decoder, format, nullptr, nullptr, 0);
@@ -647,6 +483,7 @@ namespace
 
         gDecoder = decoder;
         gDecoderConfigured = true;
+        gConfiguredCsd = gCsd;
         gDecoderRunning.store(true);
         gDecoderThread = std::thread(DecoderLoop);
         VS_DLOGI("decoder configured %dx%d %s", width, height, gMime.c_str());
@@ -673,6 +510,14 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderStart(const char* mime)
         std::lock_guard<std::mutex> outputLock(gOutputMutex);
         gDecodedFrames.clear();
     }
+    gProcessThread = std::thread([]()
+    {
+        while (gDecoderActive)
+        {
+            VSMedia_DecoderProcessPackets();
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    });
     return 1;
 }
 
@@ -776,6 +621,8 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderFeedPacket(
     uint8_t* buffer = AMediaCodec_getInputBuffer(codec, index, &bufferSize);
     if (buffer == nullptr || bufferSize < static_cast<size_t>(payloadSize))
     {
+        VS_DLOGE("getInputBuffer failed buffer=%p size=%zu need=%d",
+                 buffer, bufferSize, payloadSize);
         return 0;
     }
 
@@ -862,6 +709,10 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderStop()
     }
 
     gDecoderActive = false;
+    if (gProcessThread.joinable())
+    {
+        gProcessThread.join();
+    }
     StopDecoderLocked();
     gCsd.clear();
     gLastFrameId = -1;
