@@ -17,9 +17,9 @@ if (-not (Test-Path $toolchain)) {
 }
 
 $source = Join-Path $scriptDir "UnityVideoStreamerNative.cpp.in"
-$udpSource = Join-Path $scriptDir "VideoStreamNativeUdp.cpp"
-$codecSource = Join-Path $scriptDir "VideoStreamNativeCodec.cpp"
-$decoderSource = Join-Path $scriptDir "VideoStreamNativeDecoder.cpp"
+$udpSource = Join-Path $scriptDir "VideoStreamNativeUdp.cpp.in"
+$codecSource = Join-Path $scriptDir "VideoStreamNativeCodec.cpp.in"
+$decoderSource = Join-Path $scriptDir "VideoStreamNativeDecoder.cpp.in"
 $targets = @(
     @{ Abi = "arm64-v8a"; Clang = "aarch64-linux-android26-clang++.cmd" },
     @{ Abi = "armeabi-v7a"; Clang = "armv7a-linux-androideabi26-clang++.cmd" },
