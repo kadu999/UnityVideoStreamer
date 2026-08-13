@@ -28,7 +28,7 @@ namespace VideoStream
             var descriptor = new RenderTextureDescriptor(
                 width,
                 height,
-                GraphicsFormat.R8G8B8A8_UNorm,
+                GraphicsFormat.R8G8B8A8_SRGB,
                 0)
             {
                 msaaSamples = 1,
