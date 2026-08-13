@@ -24,8 +24,8 @@ public class VideoStreamEncoder {
     private static final byte[] START_CODE_3 = {0, 0, 1};
 
     private final AtomicBoolean running = new AtomicBoolean(false);
-    private final LinkedBlockingQueue<Runnable> callbackQueue =
-            new LinkedBlockingQueue<Runnable>();
+    private final LinkedBlockingQueue<EncodedFrameData> outputQueue =
+            new LinkedBlockingQueue<EncodedFrameData>();
 
     private VideoStreamCallback callback;
     private MediaCodec codec;
@@ -33,10 +33,16 @@ public class VideoStreamEncoder {
     private String mime;
     private volatile boolean forceKeyFrame = false;
     private Thread worker;
-    private Thread callbackWorker;
-    private volatile boolean callbackRunning = false;
     private byte[] csd;
     private int encodedFrameCount;
+
+    public static class EncodedFrameData {
+        public byte[] data;
+        public long ptsUs;
+        public boolean config;
+        public boolean keyFrame;
+        public String mime;
+    }
 
     public void setCallback(VideoStreamCallback cb) {
         this.callback = cb;
@@ -72,15 +78,6 @@ public class VideoStreamEncoder {
             codec.start();
 
             running.set(true);
-            callbackRunning = true;
-            callbackWorker = new Thread(new Runnable() {
-                @Override
-                public void run() {
-                    callbackLoop();
-                }
-            }, "VideoStreamCallback");
-            callbackWorker.start();
-
             worker = new Thread(new Runnable() {
                 @Override
                 public void run() {
@@ -110,18 +107,7 @@ public class VideoStreamEncoder {
 
     public void close() {
         running.set(false);
-        callbackRunning = false;
-
-        if (callbackWorker != null) {
-            callbackWorker.interrupt();
-            try {
-                callbackWorker.join(500);
-            } catch (InterruptedException ignored) {
-                Thread.currentThread().interrupt();
-            }
-            callbackWorker = null;
-        }
-        callbackQueue.clear();
+        outputQueue.clear();
 
         if (worker != null) {
             worker.interrupt();
@@ -163,6 +149,14 @@ public class VideoStreamEncoder {
 
     public boolean isRunning() {
         return running.get();
+    }
+
+    public int pendingFrameCount() {
+        return outputQueue.size();
+    }
+
+    public EncodedFrameData pollFrame() {
+        return outputQueue.poll();
     }
 
     private void workerLoop() {
@@ -241,66 +235,20 @@ public class VideoStreamEncoder {
                     " bytes=" + data.length +
                     " count=" + encodedFrameCount);
         }
-        try {
-            final byte[] frameData = data;
-            final long framePtsUs = ptsUs;
-            final boolean frameConfig = config;
-            final boolean frameKeyFrame = keyFrame;
-            callbackQueue.offer(new Runnable() {
-                @Override
-                public void run() {
-                    if (callback != null) {
-                        callback.onEncodedFrame(
-                                frameData,
-                                0,
-                                frameData.length,
-                                framePtsUs,
-                                frameConfig,
-                                frameKeyFrame,
-                                mime);
-                    }
-                }
-            });
-        } catch (Throwable t) {
-            error("callback failed: " + t.getMessage());
-        }
+
+        EncodedFrameData frame = new EncodedFrameData();
+        frame.data = data;
+        frame.ptsUs = ptsUs;
+        frame.config = config;
+        frame.keyFrame = keyFrame;
+        frame.mime = mime;
+        outputQueue.offer(frame);
     }
 
     private void error(String message) {
         try {
-            final String errorMessage = message;
-            callbackQueue.offer(new Runnable() {
-                @Override
-                public void run() {
-                    if (callback != null) {
-                        callback.onError(errorMessage);
-                    }
-                }
-            });
+            if (callback != null) callback.onError(message);
         } catch (Throwable ignored) {
-        }
-    }
-
-    private void callbackLoop() {
-        try {
-            while (callbackRunning || !callbackQueue.isEmpty()) {
-                Runnable task = callbackQueue.poll();
-                if (task == null) {
-                    try {
-                        Thread.sleep(2);
-                    } catch (InterruptedException e) {
-                        break;
-                    }
-                    continue;
-                }
-
-                try {
-                    task.run();
-                } catch (Throwable ignored) {
-                }
-            }
-        } finally {
-            callbackQueue.clear();
         }
     }
 

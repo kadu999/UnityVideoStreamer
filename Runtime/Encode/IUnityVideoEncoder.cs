@@ -10,6 +10,7 @@ namespace VideoStream
 
         bool Start(VideoStreamConfig config);
         void RenderFrame(IntPtr nativeTexturePtr, int width, int height, bool flipY);
+        void PollEncodedFrames();
         void RequestKeyFrame();
         void Stop();
     }

@@ -69,6 +69,54 @@ namespace VideoStream
 #endif
         }
 
+        public void PollEncodedFrames()
+        {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            var encoder = _javaEncoder;
+            if (!_running || encoder == null) return;
+
+            while (true)
+            {
+                AndroidJavaObject frame;
+                try
+                {
+                    frame = encoder.Call<AndroidJavaObject>("pollFrame");
+                }
+                catch (Exception ex)
+                {
+                    Error?.Invoke("Poll encoded frame failed: " + ex.Message);
+                    return;
+                }
+
+                if (frame == null) break;
+
+                try
+                {
+                    var sdata = frame.Get<sbyte[]>("data");
+                    if (sdata == null || sdata.Length == 0) continue;
+
+                    var data = new byte[sdata.Length];
+                    Buffer.BlockCopy(sdata, 0, data, 0, data.Length);
+                    RaiseFrameEncoded(
+                        data,
+                        frame.Get<bool>("config"),
+                        frame.Get<bool>("keyFrame"),
+                        frame.Get<string>("mime"),
+                        frame.Get<long>("ptsUs"));
+                }
+                catch (Exception ex)
+                {
+                    Error?.Invoke("Decode encoded frame failed: " + ex.Message);
+                    return;
+                }
+                finally
+                {
+                    frame.Dispose();
+                }
+            }
+#endif
+        }
+
         public void RequestKeyFrame()
         {
             try { _javaEncoder?.Call("requestKeyFrame"); }
