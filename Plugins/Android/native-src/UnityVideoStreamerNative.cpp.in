@@ -39,6 +39,7 @@ static GLuint g_fbo = 0;
 static bool g_contextReady = false;
 static int g_configuredWidth = 0;
 static int g_configuredHeight = 0;
+static double g_startMs = 0;
 
 static EGLDisplay g_unityDisplay = EGL_NO_DISPLAY;
 static EGLContext g_unityContext = EGL_NO_CONTEXT;
@@ -168,6 +169,7 @@ static bool CreateEglSurfaceAndContext()
     g_eglSurface = surface;
     g_eglContext = context;
     g_contextReady = true;
+    g_startMs = NowMs();
     eglSwapInterval(g_eglDisplay, 0);
     g_eglPresentationTimeAndroid =
         reinterpret_cast<PFNEGLPRESENTATIONTIMEANDROIDPROC>(
@@ -287,6 +289,7 @@ static void ReleaseEglResources()
     g_configuredWidth = 0;
     g_configuredHeight = 0;
     g_eglPresentationTimeAndroid = nullptr;
+    g_startMs = 0;
 }
 
 static void UNITY_INTERFACE_API RenderEvent(int eventId)
@@ -384,7 +387,7 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
         g_eglPresentationTimeAndroid(
             g_eglDisplay,
             g_eglSurface,
-            static_cast<EGLnsecsANDROID>(NowMs() * 1000000.0));
+            static_cast<EGLnsecsANDROID>((NowMs() - g_startMs) * 1000000.0));
     }
     glFlush();
 
