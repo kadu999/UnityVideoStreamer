@@ -43,12 +43,6 @@ namespace VideoStream
             uint sequence);
 
         [DllImport(Library)]
-        internal static extern int VSMedia_UdpPollPacket(
-            [Out] byte[] buffer,
-            int capacity,
-            out int size);
-
-        [DllImport(Library)]
         internal static extern int VSMedia_UdpTakeIdrRequest();
 
         [DllImport(Library)]
@@ -83,26 +77,16 @@ namespace VideoStream
             [MarshalAs(UnmanagedType.LPStr)] string mime);
 
         [DllImport(Library)]
-        internal static extern int VSMedia_DecoderFeed(
-            [In] byte[] data,
-            int size,
-            long ptsUs);
+        internal static extern int VSMedia_DecoderProcessPackets();
 
         [DllImport(Library)]
-        internal static extern int VSMedia_DecoderDequeueFrame(
+        internal static extern int VSMedia_DecoderDequeueRgba(
             [Out] byte[] buffer,
             int capacity,
             out int size,
             out int width,
             out int height,
             out long ptsUs);
-
-        [DllImport(Library)]
-        internal static extern void VSMedia_DecoderConvertNv12ToRgba(
-            [In] byte[] yuv,
-            int width,
-            int height,
-            [Out] byte[] rgba);
 
         [DllImport(Library)]
         internal static extern int VSMedia_DecoderStop();

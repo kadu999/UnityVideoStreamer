@@ -4,41 +4,425 @@
 #include <media/NdkMediaCodec.h>
 #include <media/NdkMediaFormat.h>
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <cstring>
 #include <deque>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
 #define VS_DECODER_LOG_TAG "VideoStreamNativeDecoder"
+#define VS_DLOGI(...) __android_log_print(ANDROID_LOG_INFO, VS_DECODER_LOG_TAG, __VA_ARGS__)
 #define VS_DLOGE(...) __android_log_print(ANDROID_LOG_ERROR, VS_DECODER_LOG_TAG, __VA_ARGS__)
+
+extern "C" int VSMedia_UdpPollPacket(uint8_t* buffer, int capacity, int* size);
 
 namespace
 {
+    constexpr int kFrameHeaderSize = 18;
+    constexpr uint16_t kFlagIdr = 0x0001;
+    constexpr uint16_t kFlagConfig = 0x0002;
+    constexpr uint16_t kFlagCodecAvc = 0x0010;
+    constexpr uint16_t kFlagCodecHevc = 0x0020;
+    constexpr uint8_t kStartCode4[] = {0, 0, 0, 1};
+
     struct DecodedFrame
     {
-        std::vector<uint8_t> data;
+        std::vector<uint8_t> rgba;
         int width = 0;
         int height = 0;
         int64_t ptsUs = 0;
     };
 
+    std::mutex gDecoderMutex;
     AMediaCodec* gDecoder = nullptr;
     std::thread gDecoderThread;
-    std::mutex gDecoderMutex;
-    std::deque<DecodedFrame> gDecodedFrames;
     std::atomic<bool> gDecoderRunning{false};
+    bool gDecoderActive = false;
+    bool gDecoderConfigured = false;
+    std::string gMime = "video/avc";
+    std::vector<uint8_t> gCsd;
+
+    std::mutex gOutputMutex;
+    std::deque<DecodedFrame> gDecodedFrames;
     std::atomic<int> gDecodedWidth{0};
     std::atomic<int> gDecodedHeight{0};
+
+    uint32_t ReadU16(const uint8_t* data)
+    {
+        return (static_cast<uint32_t>(data[0]) << 8) | data[1];
+    }
+
+    uint32_t ReadU32(const uint8_t* data)
+    {
+        return (static_cast<uint32_t>(data[0]) << 24) |
+               (static_cast<uint32_t>(data[1]) << 16) |
+               (static_cast<uint32_t>(data[2]) << 8) |
+               static_cast<uint32_t>(data[3]);
+    }
+
+    void Nv12ToRgba(
+        const uint8_t* yuv,
+        int width,
+        int height,
+        uint8_t* rgba)
+    {
+        if (yuv == nullptr || rgba == nullptr || width <= 0 || height <= 0)
+        {
+            return;
+        }
+
+        int frameSize = width * height;
+        for (int y = 0; y < height; ++y)
+        {
+            for (int x = 0; x < width; ++x)
+            {
+                int yIndex = y * width + x;
+                int uvIndex = frameSize + (y / 2) * width + (x & ~1);
+
+                int yy = static_cast<int>(yuv[yIndex]) - 16;
+                int uu = static_cast<int>(yuv[uvIndex]) - 128;
+                int vv = static_cast<int>(yuv[uvIndex + 1]) - 128;
+
+                yy = yy < 0 ? 0 : yy;
+                int r = (298 * yy + 409 * vv + 128) >> 8;
+                int g = (298 * yy - 100 * uu - 208 * vv + 128) >> 8;
+                int b = (298 * yy + 516 * uu + 128) >> 8;
+
+                r = r < 0 ? 0 : (r > 255 ? 255 : r);
+                g = g < 0 ? 0 : (g > 255 ? 255 : g);
+                b = b < 0 ? 0 : (b > 255 ? 255 : b);
+
+                int rgbaIndex = yIndex * 4;
+                rgba[rgbaIndex] = static_cast<uint8_t>(r);
+                rgba[rgbaIndex + 1] = static_cast<uint8_t>(g);
+                rgba[rgbaIndex + 2] = static_cast<uint8_t>(b);
+                rgba[rgbaIndex + 3] = 255;
+            }
+        }
+    }
+
+    std::vector<std::vector<uint8_t>> SplitNalUnits(const std::vector<uint8_t>& data)
+    {
+        std::vector<std::vector<uint8_t>> nalus;
+        size_t start = 0;
+        size_t i = 0;
+        while (i < data.size())
+        {
+            bool startCode4 = i + 4 <= data.size() &&
+                              data[i] == 0 && data[i + 1] == 0 &&
+                              data[i + 2] == 0 && data[i + 3] == 1;
+            bool startCode3 = !startCode4 && i + 3 <= data.size() &&
+                              data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1;
+            if (!startCode4 && !startCode3)
+            {
+                ++i;
+                continue;
+            }
+
+            if (i > start)
+            {
+                nalus.emplace_back(data.begin() + static_cast<ptrdiff_t>(start),
+                                   data.begin() + static_cast<ptrdiff_t>(i));
+            }
+            i += startCode4 ? 4 : 3;
+            start = i;
+        }
+        if (start < data.size())
+        {
+            nalus.emplace_back(data.begin() + static_cast<ptrdiff_t>(start),
+                               data.end());
+        }
+        return nalus;
+    }
+
+    bool IsParameterSet(const std::vector<uint8_t>& nalu, const std::string& mime)
+    {
+        if (nalu.empty())
+        {
+            return false;
+        }
+
+        if (mime.find("hevc") != std::string::npos)
+        {
+            uint8_t type = static_cast<uint8_t>((nalu[0] & 0x7E) >> 1);
+            return type == 32 || type == 33 || type == 34;
+        }
+
+        uint8_t type = static_cast<uint8_t>(nalu[0] & 0x1F);
+        return type == 7 || type == 8;
+    }
+
+    std::vector<uint8_t> ExtractParameterSets(
+        const std::vector<uint8_t>& data,
+        const std::string& mime)
+    {
+        auto nalus = SplitNalUnits(data);
+        int first = -1;
+        for (int i = 0; i < static_cast<int>(nalus.size()); ++i)
+        {
+            if (IsParameterSet(nalus[i], mime))
+            {
+                first = i;
+                break;
+            }
+        }
+        if (first < 0)
+        {
+            return {};
+        }
+
+        int end = first;
+        while (end < static_cast<int>(nalus.size()) && IsParameterSet(nalus[end], mime))
+        {
+            ++end;
+        }
+        if (end == first)
+        {
+            return {};
+        }
+
+        std::vector<uint8_t> out;
+        for (int i = first; i < end; ++i)
+        {
+            out.insert(out.end(), kStartCode4, kStartCode4 + 4);
+            out.insert(out.end(), nalus[i].begin(), nalus[i].end());
+        }
+        return out;
+    }
+
+    std::vector<uint8_t> WithStartCode(const std::vector<uint8_t>& nalu)
+    {
+        std::vector<uint8_t> out;
+        out.reserve(nalu.size() + 4);
+        out.insert(out.end(), kStartCode4, kStartCode4 + 4);
+        out.insert(out.end(), nalu.begin(), nalu.end());
+        return out;
+    }
+
+    class BitReader
+    {
+    public:
+        BitReader(const uint8_t* data, size_t size) : data_(data), size_(size) {}
+
+        uint32_t ReadBits(int count)
+        {
+            uint32_t value = 0;
+            for (int i = 0; i < count; ++i)
+            {
+                if (bitIndex_ >= size_ * 8)
+                {
+                    failed_ = true;
+                    return 0;
+                }
+                int byteIndex = bitIndex_ >> 3;
+                int bit = 7 - (bitIndex_ & 7);
+                value = (value << 1) | ((data_[byteIndex] >> bit) & 1);
+                ++bitIndex_;
+            }
+            return value;
+        }
+
+        void SkipBits(int count)
+        {
+            for (int i = 0; i < count; ++i)
+            {
+                ReadBits(1);
+            }
+        }
+
+        uint32_t ReadUe()
+        {
+            int leadingZeros = 0;
+            while (ReadBits(1) == 0)
+            {
+                ++leadingZeros;
+                if (leadingZeros > 31)
+                {
+                    failed_ = true;
+                    return 0;
+                }
+            }
+            return leadingZeros == 0
+                ? 0
+                : ((uint32_t{1} << leadingZeros) - 1) + ReadBits(leadingZeros);
+        }
+
+        int32_t ReadSe()
+        {
+            uint32_t codeNum = ReadUe();
+            return (codeNum & 1) == 0
+                ? -static_cast<int32_t>(codeNum / 2)
+                : static_cast<int32_t>((codeNum + 1) / 2);
+        }
+
+        bool Failed() const { return failed_; }
+
+    private:
+        const uint8_t* data_;
+        size_t size_;
+        size_t bitIndex_ = 0;
+        bool failed_ = false;
+    };
+
+    void SkipScalingList(BitReader& reader, int size)
+    {
+        int lastScale = 8;
+        int nextScale = 8;
+        for (int i = 0; i < size; ++i)
+        {
+            if (nextScale != 0)
+            {
+                int deltaScale = reader.ReadSe();
+                nextScale = (lastScale + deltaScale + 256) % 256;
+            }
+            if (nextScale != 0)
+            {
+                lastScale = nextScale;
+            }
+        }
+    }
+
+    bool ParseH264Resolution(
+        const std::vector<uint8_t>& sps,
+        int* outWidth,
+        int* outHeight)
+    {
+        if (sps.empty())
+        {
+            return false;
+        }
+
+        BitReader reader(sps.data(), sps.size());
+        int profileIdc = static_cast<int>(reader.ReadBits(8));
+        reader.SkipBits(8);
+        reader.SkipBits(8);
+        reader.ReadUe();
+
+        int chromaFormatIdc = 1;
+        bool separateColourPlane = false;
+        if (profileIdc == 100 || profileIdc == 110 || profileIdc == 122 ||
+            profileIdc == 244 || profileIdc == 44 || profileIdc == 83 ||
+            profileIdc == 86 || profileIdc == 118 || profileIdc == 128 ||
+            profileIdc == 138 || profileIdc == 139 || profileIdc == 134 ||
+            profileIdc == 135)
+        {
+            chromaFormatIdc = static_cast<int>(reader.ReadUe());
+            if (chromaFormatIdc == 3)
+            {
+                separateColourPlane = reader.ReadBits(1) == 1;
+            }
+            reader.ReadUe();
+            reader.ReadUe();
+            reader.ReadBits(1);
+            if (reader.ReadBits(1) == 1)
+            {
+                for (int i = 0; i < 8; ++i)
+                {
+                    if (reader.ReadBits(1) == 1)
+                    {
+                        SkipScalingList(reader, i < 6 ? 16 : 64);
+                    }
+                }
+            }
+        }
+
+        reader.ReadUe();
+        int picOrderCntType = static_cast<int>(reader.ReadUe());
+        if (picOrderCntType == 0)
+        {
+            reader.ReadUe();
+        }
+        else if (picOrderCntType == 1)
+        {
+            reader.ReadBits(1);
+            reader.ReadSe();
+            reader.ReadSe();
+            int count = static_cast<int>(reader.ReadUe());
+            for (int i = 0; i < count; ++i)
+            {
+                reader.ReadSe();
+            }
+        }
+
+        reader.ReadUe();
+        reader.ReadBits(1);
+        int widthInMbs = static_cast<int>(reader.ReadUe()) + 1;
+        int heightInMapUnits = static_cast<int>(reader.ReadUe()) + 1;
+        int frameMbsOnly = static_cast<int>(reader.ReadBits(1));
+        if (frameMbsOnly == 0)
+        {
+            reader.ReadBits(1);
+        }
+        reader.ReadBits(1);
+
+        int cropLeft = 0;
+        int cropRight = 0;
+        int cropTop = 0;
+        int cropBottom = 0;
+        if (reader.ReadBits(1) == 1)
+        {
+            cropLeft = static_cast<int>(reader.ReadUe());
+            cropRight = static_cast<int>(reader.ReadUe());
+            cropTop = static_cast<int>(reader.ReadUe());
+            cropBottom = static_cast<int>(reader.ReadUe());
+        }
+
+        if (reader.Failed())
+        {
+            return false;
+        }
+
+        int chromaArrayType = separateColourPlane ? 0 : chromaFormatIdc;
+        int cropUnitX = chromaArrayType == 2 ? 2 : (chromaArrayType == 3 ? 1 : 1);
+        int cropUnitY = chromaArrayType == 2 ? 2 : (chromaArrayType == 3 ? 1 : 2 - frameMbsOnly);
+        int width = widthInMbs * 16 - (cropLeft + cropRight) * cropUnitX;
+        int height = (2 - frameMbsOnly) * heightInMapUnits * 16 - (cropTop + cropBottom) * cropUnitY;
+        if (width <= 0 || height <= 0)
+        {
+            return false;
+        }
+
+        *outWidth = width;
+        *outHeight = height;
+        return true;
+    }
+
+    void StopDecoderLocked()
+    {
+        if (gDecoderThread.joinable())
+        {
+            gDecoderRunning.store(false);
+            gDecoderThread.join();
+        }
+        if (gDecoder != nullptr)
+        {
+            AMediaCodec_stop(gDecoder);
+            AMediaCodec_delete(gDecoder);
+            gDecoder = nullptr;
+        }
+        gDecoderConfigured = false;
+        gDecodedWidth.store(0);
+        gDecodedHeight.store(0);
+    }
 
     void DecoderLoop()
     {
         while (gDecoderRunning.load())
         {
+            AMediaCodec* codec = gDecoder;
+            if (codec == nullptr)
+            {
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                continue;
+            }
+
             AMediaCodecBufferInfo info{};
-            ssize_t index = AMediaCodec_dequeueOutputBuffer(gDecoder, &info, 10000);
+            ssize_t index = AMediaCodec_dequeueOutputBuffer(codec, &info, 10000);
             if (index < 0)
             {
                 continue;
@@ -46,7 +430,7 @@ namespace
 
             if (index == AMEDIACODEC_INFO_OUTPUT_FORMAT_CHANGED)
             {
-                AMediaFormat* format = AMediaCodec_getOutputFormat(gDecoder);
+                AMediaFormat* format = AMediaCodec_getOutputFormat(codec);
                 if (format != nullptr)
                 {
                     int32_t width = 0;
@@ -55,106 +439,253 @@ namespace
                     AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_HEIGHT, &height);
                     gDecodedWidth.store(width);
                     gDecodedHeight.store(height);
+                    VS_DLOGI("decoder output format %dx%d", width, height);
                     AMediaFormat_delete(format);
                 }
                 continue;
             }
 
             size_t bufferSize = 0;
-            uint8_t* buffer = AMediaCodec_getOutputBuffer(gDecoder, index, &bufferSize);
+            uint8_t* buffer = AMediaCodec_getOutputBuffer(codec, index, &bufferSize);
             if (buffer != nullptr && info.size > 0)
             {
-                DecodedFrame frame;
-                frame.data.assign(buffer + info.offset, buffer + info.offset + info.size);
-                frame.width = gDecodedWidth.load();
-                frame.height = gDecodedHeight.load();
-                frame.ptsUs = info.presentationTimeUs;
-
+                int width = gDecodedWidth.load();
+                int height = gDecodedHeight.load();
+                if (width > 0 && height > 0)
                 {
-                    std::lock_guard<std::mutex> lock(gDecoderMutex);
+                    DecodedFrame frame;
+                    frame.width = width;
+                    frame.height = height;
+                    frame.ptsUs = info.presentationTimeUs;
+                    frame.rgba.resize(static_cast<size_t>(width * height * 4));
+                    Nv12ToRgba(buffer + info.offset, width, height, frame.rgba.data());
+
+                    std::lock_guard<std::mutex> lock(gOutputMutex);
+                    if (gDecodedFrames.size() >= 4)
+                    {
+                        gDecodedFrames.pop_front();
+                    }
                     gDecodedFrames.push_back(std::move(frame));
                 }
             }
 
-            AMediaCodec_releaseOutputBuffer(gDecoder, index, false);
+            AMediaCodec_releaseOutputBuffer(codec, index, false);
         }
+    }
+
+    bool ConfigureDecoder()
+    {
+        std::lock_guard<std::mutex> lock(gDecoderMutex);
+        if (!gDecoderActive || gCsd.empty())
+        {
+            return false;
+        }
+
+        auto nalus = SplitNalUnits(gCsd);
+        if (nalus.empty())
+        {
+            VS_DLOGE("No NALUs extracted from CSD");
+            return false;
+        }
+
+        bool isHevc = gMime.find("hevc") != std::string::npos;
+        int minNalus = isHevc ? 3 : 2;
+        if (static_cast<int>(nalus.size()) < minNalus)
+        {
+            VS_DLOGE("CSD has %zu NALUs, need %d for %s",
+                     nalus.size(), minNalus, gMime.c_str());
+            return false;
+        }
+
+        int width = 1920;
+        int height = 1080;
+        if (!isHevc)
+        {
+            for (const auto& nalu : nalus)
+            {
+                if (!nalu.empty() && (nalu[0] & 0x1F) == 7)
+                {
+                    ParseH264Resolution(nalu, &width, &height);
+                    break;
+                }
+            }
+        }
+
+        StopDecoderLocked();
+
+        AMediaCodec* decoder = AMediaCodec_createDecoderByType(gMime.c_str());
+        if (decoder == nullptr)
+        {
+            VS_DLOGE("AMediaCodec_createDecoderByType failed");
+            return false;
+        }
+
+        AMediaFormat* format = AMediaFormat_new();
+        AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, gMime.c_str());
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_WIDTH, width);
+        AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_HEIGHT, height);
+        AMediaFormat_setInt32(format, "low-latency", 1);
+
+        int csdCount = std::min(static_cast<int>(nalus.size()), isHevc ? 3 : 2);
+        for (int i = 0; i < csdCount; ++i)
+        {
+            auto csdBuffer = WithStartCode(nalus[i]);
+            std::string key = "csd-" + std::to_string(i);
+            AMediaFormat_setBuffer(format, key.c_str(), csdBuffer.data(), csdBuffer.size());
+        }
+
+        media_status_t status = AMediaCodec_configure(decoder, format, nullptr, nullptr, 0);
+        AMediaFormat_delete(format);
+        if (status != AMEDIA_OK)
+        {
+            VS_DLOGE("decoder configure failed: %d", status);
+            AMediaCodec_delete(decoder);
+            return false;
+        }
+
+        status = AMediaCodec_start(decoder);
+        if (status != AMEDIA_OK)
+        {
+            VS_DLOGE("decoder start failed: %d", status);
+            AMediaCodec_delete(decoder);
+            return false;
+        }
+
+        gDecoder = decoder;
+        gDecoderConfigured = true;
+        gDecoderRunning.store(true);
+        gDecoderThread = std::thread(DecoderLoop);
+        VS_DLOGI("decoder configured %dx%d %s", width, height, gMime.c_str());
+        return true;
     }
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderStart(const char* mime)
 {
-    if (gDecoderRunning.load())
+    std::lock_guard<std::mutex> lock(gDecoderMutex);
+    if (gDecoderActive)
     {
-        return 0;
+        return 1;
     }
 
-    AMediaCodec* decoder = AMediaCodec_createDecoderByType(mime);
-    if (decoder == nullptr)
+    StopDecoderLocked();
+    gDecoderActive = true;
+    gMime = mime != nullptr ? mime : "video/avc";
+    gCsd.clear();
     {
-        VS_DLOGE("AMediaCodec_createDecoderByType failed");
-        return 0;
+        std::lock_guard<std::mutex> outputLock(gOutputMutex);
+        gDecodedFrames.clear();
     }
-
-    AMediaFormat* format = AMediaFormat_new();
-    AMediaFormat_setString(format, AMEDIAFORMAT_KEY_MIME, mime);
-    media_status_t status = AMediaCodec_configure(decoder, format, nullptr, nullptr, 0);
-    AMediaFormat_delete(format);
-    if (status != AMEDIA_OK)
-    {
-        VS_DLOGE("decoder configure failed: %d", status);
-        AMediaCodec_delete(decoder);
-        return 0;
-    }
-
-    status = AMediaCodec_start(decoder);
-    if (status != AMEDIA_OK)
-    {
-        VS_DLOGE("decoder start failed: %d", status);
-        AMediaCodec_delete(decoder);
-        return 0;
-    }
-
-    gDecoder = decoder;
-    gDecoderRunning.store(true);
-    gDecoderThread = std::thread(DecoderLoop);
     return 1;
 }
 
-extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderFeed(
-    const uint8_t* data,
-    int size,
-    int64_t ptsUs)
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderFeedPacket(
+    const uint8_t* packet,
+    int size)
 {
-    if (gDecoder == nullptr || data == nullptr || size <= 0)
+    if (packet == nullptr || size < kFrameHeaderSize)
     {
         return 0;
     }
 
-    ssize_t index = AMediaCodec_dequeueInputBuffer(gDecoder, 10000);
+    uint16_t flags = static_cast<uint16_t>(ReadU16(packet + 16));
+    if ((flags & kFlagCodecAvc) != 0)
+    {
+        gMime = "video/avc";
+    }
+    else if ((flags & kFlagCodecHevc) != 0)
+    {
+        gMime = "video/hevc";
+    }
+
+    int64_t ptsUs = static_cast<int64_t>(ReadU32(packet + 4)) << 32 |
+                    static_cast<int64_t>(ReadU32(packet + 8));
+    uint32_t naluSize = ReadU32(packet + 12);
+    int payloadSize = static_cast<int>(std::min<uint32_t>(
+        naluSize, static_cast<uint32_t>(size - kFrameHeaderSize)));
+    const uint8_t* payload = packet + kFrameHeaderSize;
+
+    if ((flags & kFlagConfig) != 0)
+    {
+        gCsd.assign(payload, payload + payloadSize);
+        return ConfigureDecoder() ? 1 : 0;
+    }
+
+    if (!gDecoderConfigured)
+    {
+        if ((flags & kFlagIdr) != 0)
+        {
+            auto extracted = ExtractParameterSets(
+                std::vector<uint8_t>(payload, payload + payloadSize), gMime);
+            if (!extracted.empty())
+            {
+                gCsd = std::move(extracted);
+            }
+            if (!ConfigureDecoder())
+            {
+                return 0;
+            }
+        }
+        else
+        {
+            return 0;
+        }
+    }
+
+    AMediaCodec* codec = gDecoder;
+    if (codec == nullptr)
+    {
+        return 0;
+    }
+
+    ssize_t index = AMediaCodec_dequeueInputBuffer(codec, 10000);
     if (index < 0)
     {
         return 0;
     }
 
     size_t bufferSize = 0;
-    uint8_t* buffer = AMediaCodec_getInputBuffer(gDecoder, index, &bufferSize);
-    if (buffer == nullptr || bufferSize < static_cast<size_t>(size))
+    uint8_t* buffer = AMediaCodec_getInputBuffer(codec, index, &bufferSize);
+    if (buffer == nullptr || bufferSize < static_cast<size_t>(payloadSize))
     {
         return 0;
     }
 
-    std::memcpy(buffer, data, static_cast<size_t>(size));
+    std::memcpy(buffer, payload, static_cast<size_t>(payloadSize));
     media_status_t status = AMediaCodec_queueInputBuffer(
-        gDecoder,
+        codec,
         index,
         0,
-        static_cast<size_t>(size),
+        static_cast<size_t>(payloadSize),
         static_cast<uint64_t>(ptsUs),
         0);
     return status == AMEDIA_OK ? 1 : 0;
 }
 
-extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderDequeueFrame(
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderProcessPackets()
+{
+    static thread_local std::vector<uint8_t> buffer(256 * 1024);
+    int processed = 0;
+    while (true)
+    {
+        int size = 0;
+        if (VSMedia_UdpPollPacket(buffer.data(), static_cast<int>(buffer.size()), &size) != 1)
+        {
+            break;
+        }
+        if (size < kFrameHeaderSize)
+        {
+            continue;
+        }
+        if (VSMedia_DecoderFeedPacket(buffer.data(), size) == 1)
+        {
+            ++processed;
+        }
+    }
+    return processed;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderDequeueRgba(
     uint8_t* buffer,
     int capacity,
     int* size,
@@ -162,92 +693,41 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderDequeueFrame(
     int* height,
     int64_t* ptsUs)
 {
-    DecodedFrame frame;
-    {
-        std::lock_guard<std::mutex> lock(gDecoderMutex);
-        if (gDecodedFrames.empty())
-        {
-            return 0;
-        }
-        frame = std::move(gDecodedFrames.front());
-        gDecodedFrames.pop_front();
-    }
-
-    if (buffer == nullptr || capacity < static_cast<int>(frame.data.size()))
+    std::lock_guard<std::mutex> lock(gOutputMutex);
+    if (gDecodedFrames.empty())
     {
         return 0;
     }
 
-    std::memcpy(buffer, frame.data.data(), frame.data.size());
-    if (size != nullptr) *size = static_cast<int>(frame.data.size());
+    const auto& frame = gDecodedFrames.front();
+    int required = frame.width * frame.height * 4;
+    if (buffer == nullptr || capacity < required)
+    {
+        return 0;
+    }
+
+    std::memcpy(buffer, frame.rgba.data(), static_cast<size_t>(required));
+    if (size != nullptr) *size = required;
     if (width != nullptr) *width = frame.width;
     if (height != nullptr) *height = frame.height;
     if (ptsUs != nullptr) *ptsUs = frame.ptsUs;
+    gDecodedFrames.pop_front();
     return 1;
-}
-
-extern "C" UNITY_INTERFACE_EXPORT void VSMedia_DecoderConvertNv12ToRgba(
-    const uint8_t* yuv,
-    int width,
-    int height,
-    uint8_t* rgba)
-{
-    if (yuv == nullptr || rgba == nullptr || width <= 0 || height <= 0)
-    {
-        return;
-    }
-
-    int frameSize = width * height;
-    for (int y = 0; y < height; ++y)
-    {
-        for (int x = 0; x < width; ++x)
-        {
-            int yIndex = y * width + x;
-            int uvIndex = frameSize + (y / 2) * width + (x & ~1);
-
-            int yy = static_cast<int>(yuv[yIndex]) - 16;
-            int uu = static_cast<int>(yuv[uvIndex]) - 128;
-            int vv = static_cast<int>(yuv[uvIndex + 1]) - 128;
-
-            yy = yy < 0 ? 0 : yy;
-            int r = (298 * yy + 409 * vv + 128) >> 8;
-            int g = (298 * yy - 100 * uu - 208 * vv + 128) >> 8;
-            int b = (298 * yy + 516 * uu + 128) >> 8;
-
-            r = r < 0 ? 0 : (r > 255 ? 255 : r);
-            g = g < 0 ? 0 : (g > 255 ? 255 : g);
-            b = b < 0 ? 0 : (b > 255 ? 255 : b);
-
-            int rgbaIndex = yIndex * 4;
-            rgba[rgbaIndex] = static_cast<uint8_t>(r);
-            rgba[rgbaIndex + 1] = static_cast<uint8_t>(g);
-            rgba[rgbaIndex + 2] = static_cast<uint8_t>(b);
-            rgba[rgbaIndex + 3] = 255;
-        }
-    }
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderStop()
 {
-    if (!gDecoderRunning.exchange(false))
+    std::lock_guard<std::mutex> lock(gDecoderMutex);
+    if (!gDecoderActive)
     {
         return 1;
     }
 
-    if (gDecoderThread.joinable())
+    gDecoderActive = false;
+    StopDecoderLocked();
+    gCsd.clear();
     {
-        gDecoderThread.join();
-    }
-
-    if (gDecoder != nullptr)
-    {
-        AMediaCodec_stop(gDecoder);
-        AMediaCodec_delete(gDecoder);
-        gDecoder = nullptr;
-    }
-
-    {
-        std::lock_guard<std::mutex> lock(gDecoderMutex);
+        std::lock_guard<std::mutex> outputLock(gOutputMutex);
         gDecodedFrames.clear();
     }
     return 1;
