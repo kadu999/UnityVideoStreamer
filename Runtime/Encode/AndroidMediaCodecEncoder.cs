@@ -57,7 +57,7 @@ namespace VideoStream
         public static IUnityVideoEncoder Create(VideoStreamConfig config)
         {
 #if UNITY_ANDROID && !UNITY_EDITOR
-            return new AndroidMediaCodecEncoder();
+            return new NativeMediaCodecEncoder();
 #else
             Debug.Log("[VideoStream] Streaming requires an Android build; disabled in editor/desktop.");
             return null;

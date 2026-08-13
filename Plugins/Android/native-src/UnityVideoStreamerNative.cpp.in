@@ -16,6 +16,8 @@
 #include <mutex>
 #include <thread>
 
+extern "C" ANativeWindow* VSMedia_CodecGetInputSurface();
+
 #ifndef GL_FRAMEBUFFER_SRGB
 #define GL_FRAMEBUFFER_SRGB 0x8DB9
 #endif
@@ -66,6 +68,15 @@ static double NowMs()
         std::chrono::steady_clock::now().time_since_epoch()).count();
 }
 
+static ANativeWindow* GetActiveInputWindow()
+{
+    if (g_nativeWindow != nullptr)
+    {
+        return g_nativeWindow;
+    }
+    return VSMedia_CodecGetInputSurface();
+}
+
 static const char* EglErrorString(EGLint error)
 {
     switch (error)
@@ -98,7 +109,8 @@ static void LogEglError(const char* what)
 static bool CreateEglSurfaceAndContext()
 {
     if (g_contextReady) return true;
-    if (!g_nativeWindow) return false;
+    ANativeWindow* activeWindow = GetActiveInputWindow();
+    if (!activeWindow) return false;
 
     EGLDisplay unityDisplay = eglGetCurrentDisplay();
     EGLContext unityContext = eglGetCurrentContext();
@@ -141,7 +153,7 @@ static bool CreateEglSurfaceAndContext()
         EGL_NONE
     };
 
-    EGLSurface surface = eglCreateWindowSurface(unityDisplay, config, g_nativeWindow, nullptr);
+    EGLSurface surface = eglCreateWindowSurface(unityDisplay, config, activeWindow, nullptr);
     if (surface == EGL_NO_SURFACE)
     {
         LogEglError("eglCreateWindowSurface");
@@ -159,7 +171,7 @@ static bool CreateEglSurfaceAndContext()
     if (g_configuredWidth > 0 && g_configuredHeight > 0)
     {
         ANativeWindow_setBuffersGeometry(
-            g_nativeWindow,
+            activeWindow,
             g_configuredWidth,
             g_configuredHeight,
             WINDOW_FORMAT_RGBA_8888);
@@ -298,7 +310,7 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
 
     std::lock_guard<std::mutex> lock(g_eglMutex);
 
-    if (!g_nativeWindow) return;
+    if (!GetActiveInputWindow()) return;
     if (!g_contextReady && !CreateEglSurfaceAndContext()) return;
     EnsureSwapThreadStarted();
 
