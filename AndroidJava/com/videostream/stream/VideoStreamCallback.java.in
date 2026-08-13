@@ -1,5 +1,0 @@
-package com.videostream.stream;
-
-public interface VideoStreamCallback {
-    void onError(String message);
-}
