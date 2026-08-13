@@ -33,7 +33,6 @@ namespace VideoStream
         readonly object _stateLock = new object();
         readonly ConcurrentQueue<IPEndPoint> _pendingTargets = new ConcurrentQueue<IPEndPoint>();
         IUnityVideoEncoder _encoder;
-        UdpVideoSender _sender;
         UdpTargetDiscovery _discovery;
         UnityFrameCapture _capture;
         Coroutine _captureCoroutine;
@@ -41,8 +40,6 @@ namespace VideoStream
         long _encodedFrameLogCount;
         float _nextCaptureTime;
         bool _connected;
-        int _idrRequestCount;
-
         public event Action<string> OnError;
         public event Action<bool> SearchingChanged;
         public event Action<IPEndPoint> TargetDiscovered;
@@ -107,12 +104,6 @@ namespace VideoStream
             }
 #endif
 
-            var idrRequests = Interlocked.Exchange(ref _idrRequestCount, 0);
-            if (idrRequests > 0)
-            {
-                _encoder?.RequestKeyFrame();
-            }
-
             while (_pendingTargets.TryDequeue(out var endpoint))
             {
                 TargetDiscovered?.Invoke(endpoint);
@@ -122,7 +113,6 @@ namespace VideoStream
                     break;
                 }
 
-                _sender?.AddTarget(endpoint);
                 _encoder?.RequestKeyFrame();
             }
         }
@@ -227,31 +217,6 @@ namespace VideoStream
                     return;
                 }
 
-#if UNITY_ANDROID && !UNITY_EDITOR
-                bool nativeEncoder = _encoder is NativeMediaCodecEncoder;
-#else
-                bool nativeEncoder = false;
-#endif
-
-                if (!nativeEncoder)
-                {
-                    _sender = new UdpVideoSender();
-                    _sender.OnIdrRequested += HandleIdrRequested;
-                    _sender.OnError += HandleSenderError;
-                    if (!_sender.Start(config.LocalPort))
-                    {
-                        CleanupStreaming();
-                        return;
-                    }
-
-                    if (!string.IsNullOrWhiteSpace(config.TargetAddress) &&
-                        !TryAddTarget(config.TargetAddress, config.TargetPort))
-                    {
-                        CleanupStreaming();
-                        return;
-                    }
-                }
-
                 _encoder.FrameEncoded += HandleFrameEncoded;
                 _encoder.Error += HandleEncoderError;
                 if (!_encoder.Start(config))
@@ -289,7 +254,7 @@ namespace VideoStream
         {
             lock (_stateLock)
             {
-                if (!_streaming && _encoder == null && _sender == null && _capture == null && _discovery == null) return;
+                if (!_streaming && _encoder == null && _capture == null && _discovery == null) return;
                 _streaming = false;
 
                 if (_captureCoroutine != null)
@@ -324,14 +289,6 @@ namespace VideoStream
                 _discovery.Dispose();
                 _discovery = null;
                 SearchingChanged?.Invoke(false);
-            }
-
-            if (_sender != null)
-            {
-                _sender.OnIdrRequested -= HandleIdrRequested;
-                _sender.OnError -= HandleSenderError;
-                _sender.Dispose();
-                _sender = null;
             }
 
         }
@@ -369,13 +326,6 @@ namespace VideoStream
                 return;
             }
 #endif
-
-            _sender?.SendFrame(frame);
-        }
-
-        void HandleIdrRequested()
-        {
-            Interlocked.Increment(ref _idrRequestCount);
         }
 
         void HandleTargetDiscovered(IPEndPoint endpoint)
@@ -393,29 +343,6 @@ namespace VideoStream
         void HandleEncoderError(string message)
         {
             RaiseError(message);
-        }
-
-        void HandleSenderError(string message)
-        {
-            RaiseError(message);
-        }
-
-        bool TryAddTarget(string host, int port)
-        {
-            if (port <= 0 || port > 65535)
-            {
-                RaiseError("Invalid UDP target port: " + port);
-                return false;
-            }
-
-            if (string.IsNullOrWhiteSpace(host) || !IPAddress.TryParse(host, out var ip))
-            {
-                RaiseError("Invalid UDP target address: " + host);
-                return false;
-            }
-
-            _sender.AddTarget(new IPEndPoint(ip, port));
-            return true;
         }
 
         void RaiseError(string message)

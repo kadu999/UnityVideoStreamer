@@ -3,11 +3,9 @@
 
 #include <android/log.h>
 #include <android/native_window.h>
-#include <android/native_window_jni.h>
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
-#include <jni.h>
 
 #include <atomic>
 #include <chrono>
@@ -27,20 +25,16 @@ extern "C" ANativeWindow* VSMedia_CodecGetInputSurface();
 #define LOGW(...) __android_log_print(ANDROID_LOG_WARN, LOG_TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, LOG_TAG, __VA_ARGS__)
 
-static JavaVM* g_javaVm = nullptr;
 static IUnityInterfaces* g_unityInterfaces = nullptr;
 static IUnityGraphics* g_graphics = nullptr;
 static int g_eventBase = -1;
 
 static std::mutex g_eglMutex;
-static ANativeWindow* g_nativeWindow = nullptr;
 static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
 static EGLSurface g_eglSurface = EGL_NO_SURFACE;
 static EGLContext g_eglContext = EGL_NO_CONTEXT;
 static GLuint g_fbo = 0;
 static bool g_contextReady = false;
-static int g_configuredWidth = 0;
-static int g_configuredHeight = 0;
 static double g_startMs = 0;
 
 static EGLDisplay g_unityDisplay = EGL_NO_DISPLAY;
@@ -71,10 +65,6 @@ static double NowMs()
 
 static ANativeWindow* GetActiveInputWindow()
 {
-    if (g_nativeWindow != nullptr)
-    {
-        return g_nativeWindow;
-    }
     return VSMedia_CodecGetInputSurface();
 }
 
@@ -167,15 +157,6 @@ static bool CreateEglSurfaceAndContext()
         LogEglError("eglCreateContext");
         eglDestroySurface(unityDisplay, surface);
         return false;
-    }
-
-    if (g_configuredWidth > 0 && g_configuredHeight > 0)
-    {
-        ANativeWindow_setBuffersGeometry(
-            activeWindow,
-            g_configuredWidth,
-            g_configuredHeight,
-            WINDOW_FORMAT_RGBA_8888);
     }
 
     g_eglDisplay = unityDisplay;
@@ -302,18 +283,10 @@ static void ReleaseEglResources()
         g_contextReady = false;
     }
 
-    if (g_nativeWindow != nullptr)
-    {
-        ANativeWindow_release(g_nativeWindow);
-        g_nativeWindow = nullptr;
-    }
-
     g_unityDisplay = EGL_NO_DISPLAY;
     g_unityContext = EGL_NO_CONTEXT;
     g_unityDraw = EGL_NO_SURFACE;
     g_unityRead = EGL_NO_SURFACE;
-    g_configuredWidth = 0;
-    g_configuredHeight = 0;
     g_eglPresentationTimeAndroid = nullptr;
     g_startMs = 0;
 }
@@ -487,57 +460,4 @@ extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API SetFrameInfo(
     g_frameWidth.store(width);
     g_frameHeight.store(height);
     g_frameFlipY.store(flipY);
-}
-
-JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)
-{
-    g_javaVm = vm;
-    return JNI_VERSION_1_6;
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_videostream_stream_VideoStreamEncoder_nativeAttachInputSurface(
-    JNIEnv* env,
-    jobject thiz,
-    jobject surface,
-    jint width,
-    jint height)
-{
-    std::lock_guard<std::mutex> lock(g_eglMutex);
-    if (g_nativeWindow != nullptr)
-    {
-        ANativeWindow_release(g_nativeWindow);
-        g_nativeWindow = nullptr;
-    }
-
-    if (surface == nullptr)
-    {
-        LOGE("nativeAttachInputSurface called with null Surface");
-        return;
-    }
-
-    g_nativeWindow = ANativeWindow_fromSurface(env, surface);
-    if (g_nativeWindow == nullptr)
-    {
-        LOGE("ANativeWindow_fromSurface failed");
-        return;
-    }
-
-    g_configuredWidth = width;
-    g_configuredHeight = height;
-    ANativeWindow_setBuffersGeometry(
-        g_nativeWindow,
-        width,
-        height,
-        WINDOW_FORMAT_RGBA_8888);
-    LOGI("Attached MediaCodec input Surface %dx%d", width, height);
-}
-
-extern "C" JNIEXPORT void JNICALL
-Java_com_videostream_stream_VideoStreamEncoder_nativeReleaseInputSurface(
-    JNIEnv* env,
-    jobject thiz)
-{
-    ReleaseEglResources();
-    g_active.store(false);
 }

@@ -1,7 +1,3 @@
-using System;
-using System.Collections.Generic;
-using System.Threading;
-
 namespace VideoStream
 {
     internal readonly struct FrameHeader
@@ -44,23 +40,10 @@ namespace VideoStream
         public const ushort FlagCameraSubscribe = 0x0100;
         public const ushort FlagLatencyProbe = 0x0200;
 
-        public static byte[] PackFrame(in FrameHeader header, byte[] payload)
-        {
-            if (payload == null) throw new ArgumentNullException(nameof(payload));
-
-            var packet = new byte[HeaderSize + payload.Length];
-            WriteInt32(packet, 0, header.FrameId);
-            WriteInt64(packet, 4, header.PtsUs);
-            WriteInt32(packet, 12, header.NaluSize);
-            WriteUInt16(packet, 16, header.Flags);
-            Buffer.BlockCopy(payload, 0, packet, HeaderSize, payload.Length);
-            return packet;
-        }
-
         public static FrameHeader ParseHeader(byte[] data, int offset, int length)
         {
-            if (data == null) throw new ArgumentNullException(nameof(data));
-            if (length - offset < HeaderSize) throw new ArgumentException("Packet is shorter than FrameProtocol header");
+            if (data == null) throw new System.ArgumentNullException(nameof(data));
+            if (length - offset < HeaderSize) throw new System.ArgumentException("Packet is shorter than FrameProtocol header");
 
             return new FrameHeader(
                 ReadInt32(data, offset),
@@ -68,26 +51,6 @@ namespace VideoStream
                 ReadInt32(data, offset + 12),
                 ReadUInt16(data, offset + 16)
             );
-        }
-
-        public static void WriteUInt16(byte[] buffer, int offset, ushort value)
-        {
-            buffer[offset] = (byte)(value >> 8);
-            buffer[offset + 1] = (byte)value;
-        }
-
-        public static void WriteInt32(byte[] buffer, int offset, int value)
-        {
-            buffer[offset] = (byte)(value >> 24);
-            buffer[offset + 1] = (byte)(value >> 16);
-            buffer[offset + 2] = (byte)(value >> 8);
-            buffer[offset + 3] = (byte)value;
-        }
-
-        public static void WriteInt64(byte[] buffer, int offset, long value)
-        {
-            WriteInt32(buffer, offset, (int)(value >> 32));
-            WriteInt32(buffer, offset + 4, (int)value);
         }
 
         static ushort ReadUInt16(byte[] data, int offset)
@@ -108,72 +71,6 @@ namespace VideoStream
             var hi = (long)ReadInt32(data, offset);
             var lo = (uint)ReadInt32(data, offset + 4);
             return (hi << 32) | lo;
-        }
-    }
-
-    internal static class UdpFramer
-    {
-        public const int HeaderSize = 10;
-        public const int MaxDatagramPayload = 1400;
-        public const ushort FlagIsIdr = 0x0001;
-
-        public static List<byte[]> Fragment(byte[] packet, int sequence, bool isIdr)
-        {
-            if (packet == null) throw new ArgumentNullException(nameof(packet));
-
-            var flags = isIdr ? FlagIsIdr : (ushort)0;
-            if (packet.Length <= MaxDatagramPayload)
-            {
-                return new List<byte[]> { MakeFragment(flags, 0, 1, sequence, packet) };
-            }
-
-            var count = (packet.Length + MaxDatagramPayload - 1) / MaxDatagramPayload;
-            var fragments = new List<byte[]>(count);
-            for (var index = 0; index < count; index++)
-            {
-                var start = index * MaxDatagramPayload;
-                var end = Math.Min(start + MaxDatagramPayload, packet.Length);
-                var payload = new byte[end - start];
-                Buffer.BlockCopy(packet, start, payload, 0, payload.Length);
-                fragments.Add(MakeFragment(flags, index, count, sequence, payload));
-            }
-            return fragments;
-        }
-
-        static byte[] MakeFragment(ushort flags, int index, int count, int sequence, byte[] payload)
-        {
-            var datagram = new byte[HeaderSize + payload.Length];
-            FrameProtocol.WriteUInt16(datagram, 0, flags);
-            FrameProtocol.WriteUInt16(datagram, 2, (ushort)index);
-            FrameProtocol.WriteUInt16(datagram, 4, (ushort)count);
-            FrameProtocol.WriteInt32(datagram, 6, sequence);
-            Buffer.BlockCopy(payload, 0, datagram, HeaderSize, payload.Length);
-            return datagram;
-        }
-    }
-
-    internal sealed class FramePacketizer
-    {
-        int _frameId;
-
-        public byte[] Pack(EncodedFrame frame)
-        {
-            ushort flags = 0;
-            if (frame.IsConfig) flags |= FrameProtocol.FlagConfig;
-            if (frame.IsKeyFrame) flags |= FrameProtocol.FlagIdr;
-
-            if (string.Equals(frame.MimeType, "video/hevc", System.StringComparison.OrdinalIgnoreCase))
-            {
-                flags |= FrameProtocol.FlagCodecHevc;
-            }
-            else
-            {
-                flags |= FrameProtocol.FlagCodecAvc;
-            }
-
-            var frameId = Interlocked.Increment(ref _frameId) - 1;
-            var header = new FrameHeader(frameId, frame.PtsUs, frame.Data.Length, flags);
-            return FrameProtocol.PackFrame(header, frame.Data);
         }
     }
 }
