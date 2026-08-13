@@ -100,6 +100,13 @@ namespace VideoStream
 
         void Update()
         {
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_encoder is NativeMediaCodecEncoder nativeEncoder && nativeEncoder.TakeIdrRequest())
+            {
+                nativeEncoder.RequestKeyFrame();
+            }
+#endif
+
             var idrRequests = Interlocked.Exchange(ref _idrRequestCount, 0);
             if (idrRequests > 0)
             {
@@ -220,20 +227,29 @@ namespace VideoStream
                     return;
                 }
 
-                _sender = new UdpVideoSender();
-                _sender.OnIdrRequested += HandleIdrRequested;
-                _sender.OnError += HandleSenderError;
-                if (!_sender.Start(config.LocalPort))
-                {
-                    CleanupStreaming();
-                    return;
-                }
+#if UNITY_ANDROID && !UNITY_EDITOR
+                bool nativeEncoder = _encoder is NativeMediaCodecEncoder;
+#else
+                bool nativeEncoder = false;
+#endif
 
-                if (!string.IsNullOrWhiteSpace(config.TargetAddress) &&
-                    !TryAddTarget(config.TargetAddress, config.TargetPort))
+                if (!nativeEncoder)
                 {
-                    CleanupStreaming();
-                    return;
+                    _sender = new UdpVideoSender();
+                    _sender.OnIdrRequested += HandleIdrRequested;
+                    _sender.OnError += HandleSenderError;
+                    if (!_sender.Start(config.LocalPort))
+                    {
+                        CleanupStreaming();
+                        return;
+                    }
+
+                    if (!string.IsNullOrWhiteSpace(config.TargetAddress) &&
+                        !TryAddTarget(config.TargetAddress, config.TargetPort))
+                    {
+                        CleanupStreaming();
+                        return;
+                    }
                 }
 
                 _encoder.FrameEncoded += HandleFrameEncoded;
@@ -338,8 +354,6 @@ namespace VideoStream
 
         void HandleFrameEncoded(EncodedFrame frame)
         {
-            if (_sender == null) return;
-
             var encodedCount = Interlocked.Increment(ref _encodedFrameLogCount);
             if (encodedCount <= 5 || encodedCount % 60 == 0)
             {
@@ -348,7 +362,15 @@ namespace VideoStream
                           " bytes=" + frame.Data.Length);
             }
 
-            _sender.SendFrame(frame);
+#if UNITY_ANDROID && !UNITY_EDITOR
+            if (_encoder is NativeMediaCodecEncoder nativeEncoder)
+            {
+                nativeEncoder.SendFrame(frame);
+                return;
+            }
+#endif
+
+            _sender?.SendFrame(frame);
         }
 
         void HandleIdrRequested()

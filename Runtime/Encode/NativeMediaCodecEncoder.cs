@@ -1,5 +1,6 @@
 #if UNITY_ANDROID && !UNITY_EDITOR
 using System;
+using System.Threading;
 using UnityEngine;
 
 namespace VideoStream
@@ -10,6 +11,8 @@ namespace VideoStream
         readonly byte[] _frameBuffer = new byte[4 * 1024 * 1024];
 
         string _mime = "video/avc";
+        int _frameId;
+        int _sequence;
         volatile bool _running;
 
         public event Action<EncodedFrame> FrameEncoded;
@@ -33,6 +36,14 @@ namespace VideoStream
                 if (!ok)
                 {
                     Error?.Invoke("Native MediaCodec encoder start failed");
+                    return false;
+                }
+
+                if (VideoStreamNative.VSMedia_UdpStart(config.LocalPort) != 1 ||
+                    VideoStreamNative.VSMedia_UdpAddTarget(config.TargetAddress, config.TargetPort) != 1)
+                {
+                    Error?.Invoke("Native UDP start failed");
+                    VideoStreamNative.VSMedia_CodecStop();
                     return false;
                 }
 
@@ -82,6 +93,31 @@ namespace VideoStream
             VideoStreamNative.VSMedia_CodecRequestKeyFrame();
         }
 
+        public void SendFrame(EncodedFrame frame)
+        {
+            if (!_running || frame.Data == null || frame.Data.Length == 0)
+            {
+                return;
+            }
+
+            var frameId = Interlocked.Increment(ref _frameId) - 1;
+            var sequence = (uint)Interlocked.Increment(ref _sequence);
+            VideoStreamNative.VSMedia_UdpSendFrame(
+                frameId,
+                frame.PtsUs,
+                frame.Data,
+                frame.Data.Length,
+                frame.IsConfig,
+                frame.IsKeyFrame,
+                frame.MimeType,
+                sequence);
+        }
+
+        public bool TakeIdrRequest()
+        {
+            return VideoStreamNative.VSMedia_UdpTakeIdrRequest() > 0;
+        }
+
         public void Stop()
         {
             lock (_lock)
@@ -89,6 +125,7 @@ namespace VideoStream
                 if (!_running) return;
                 _running = false;
                 VideoStreamNative.VSMedia_CodecStop();
+                VideoStreamNative.VSMedia_UdpStop();
             }
         }
 
