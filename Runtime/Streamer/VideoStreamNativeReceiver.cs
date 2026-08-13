@@ -1,5 +1,6 @@
 #if UNITY_ANDROID && !UNITY_EDITOR
 using System;
+using System.Runtime.InteropServices;
 using UnityEngine;
 
 namespace VideoStream
@@ -126,7 +127,15 @@ namespace VideoStream
                         _outputTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
                     }
 
-                    _outputTexture.LoadRawTextureData(_rgbaBuffer, rgbaSize);
+                    var handle = GCHandle.Alloc(_rgbaBuffer, GCHandleType.Pinned);
+                    try
+                    {
+                        _outputTexture.LoadRawTextureData(handle.AddrOfPinnedObject(), rgbaSize);
+                    }
+                    finally
+                    {
+                        handle.Free();
+                    }
                     _outputTexture.Apply();
                     FrameRendered?.Invoke(_outputTexture, ptsUs);
                 }
