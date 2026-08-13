@@ -34,7 +34,6 @@ namespace VideoStream
         UdpVideoSender _sender;
         UdpTargetDiscovery _discovery;
         UnityFrameCapture _capture;
-        FramePacketizer _packetizer;
         Coroutine _captureCoroutine;
         volatile bool _streaming;
         long _encodedFrameLogCount;
@@ -196,7 +195,6 @@ namespace VideoStream
                     Debug.Log("[VideoStream] URP capture uses the VideoStream Camera Capture renderer feature (GPU copy).");
                 }
 
-                _packetizer = new FramePacketizer();
                 _streaming = true;
                 _nextCaptureTime = 0f;
                 _captureCoroutine = StartCoroutine(CaptureLoop());
@@ -255,7 +253,6 @@ namespace VideoStream
                 _sender = null;
             }
 
-            _packetizer = null;
         }
 
         IEnumerator CaptureLoop()
@@ -276,7 +273,7 @@ namespace VideoStream
 
         void HandleFrameEncoded(EncodedFrame frame)
         {
-            if (_sender == null || _packetizer == null) return;
+            if (_sender == null) return;
 
             var encodedCount = Interlocked.Increment(ref _encodedFrameLogCount);
             if (encodedCount <= 5 || encodedCount % 60 == 0)
@@ -286,8 +283,7 @@ namespace VideoStream
                           " bytes=" + frame.Data.Length);
             }
 
-            var packet = _packetizer.Pack(frame);
-            _sender.SendFrame(packet, frame.IsKeyFrame || frame.IsConfig);
+            _sender.SendFrame(frame);
         }
 
         void HandleIdrRequested()

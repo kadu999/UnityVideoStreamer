@@ -13,7 +13,8 @@ namespace VideoStream
     {
         readonly object _lock = new object();
         readonly List<IPEndPoint> _targets = new List<IPEndPoint>();
-        readonly ConcurrentQueue<byte[]> _outbound = new ConcurrentQueue<byte[]>();
+        readonly ConcurrentQueue<EncodedFrame> _frames = new ConcurrentQueue<EncodedFrame>();
+        readonly FramePacketizer _packetizer = new FramePacketizer();
 
         Socket _socket;
         Thread _sendThread;
@@ -78,13 +79,15 @@ namespace VideoStream
                 if (!_running) return;
                 _running = false;
                 socket = _socket;
-                _socket = null;
             }
 
-            try { socket?.Close(); } catch { }
-
             _sendThread?.Join(500);
+            try { socket?.Close(); } catch { }
             _receiveThread?.Join(500);
+            lock (_lock)
+            {
+                _socket = null;
+            }
             _sendThread = null;
             _receiveThread = null;
         }
@@ -113,51 +116,57 @@ namespace VideoStream
             lock (_lock) _targets.Clear();
         }
 
-        public void SendFrame(byte[] framePacket, bool isIdr)
+        public void SendFrame(in EncodedFrame frame)
         {
-            if (framePacket == null || framePacket.Length == 0) return;
-
-            var sequence = Interlocked.Increment(ref _sequence);
-            var fragments = UdpFramer.Fragment(framePacket, sequence, isIdr);
-            foreach (var fragment in fragments)
-            {
-                _outbound.Enqueue(fragment);
-            }
+            if (frame.Data == null || frame.Data.Length == 0) return;
+            _frames.Enqueue(frame);
         }
 
         void SendLoop()
         {
-            while (_running)
+            while (_running || !_frames.IsEmpty)
             {
-                if (!_outbound.TryDequeue(out var datagram))
+                if (!_frames.TryDequeue(out var frame))
                 {
+                    if (!_running) break;
                     Thread.Sleep(1);
                     continue;
                 }
 
-                IPEndPoint[] targets;
-                lock (_lock)
+                var packet = _packetizer.Pack(frame);
+                var sequence = Interlocked.Increment(ref _sequence);
+                var fragments = UdpFramer.Fragment(packet, sequence, frame.IsKeyFrame || frame.IsConfig);
+                foreach (var datagram in fragments)
                 {
-                    targets = _targets.ToArray();
+                    SendDatagrams(datagram);
                 }
+            }
+        }
 
-                if (targets.Length == 0) continue;
+        void SendDatagrams(byte[] datagram)
+        {
+            IPEndPoint[] targets;
+            lock (_lock)
+            {
+                targets = _targets.ToArray();
+            }
 
-                foreach (var target in targets)
+            if (targets.Length == 0) return;
+
+            foreach (var target in targets)
+            {
+                try
                 {
-                    try
+                    _socket?.SendTo(datagram, datagram.Length, SocketFlags.None, target);
+                    var sent = Interlocked.Increment(ref _sentDatagrams);
+                    if (sent <= 5 || sent % 60 == 0)
                     {
-                        _socket?.SendTo(datagram, datagram.Length, SocketFlags.None, target);
-                        var sent = Interlocked.Increment(ref _sentDatagrams);
-                        if (sent <= 5 || sent % 60 == 0)
-                        {
-                            UnityEngine.Debug.Log("[VideoStream] UDP datagrams sent=" + sent);
-                        }
+                        UnityEngine.Debug.Log("[VideoStream] UDP datagrams sent=" + sent);
                     }
-                    catch (Exception ex)
-                    {
-                        RaiseError("UDP send failed: " + ex.Message);
-                    }
+                }
+                catch (Exception ex)
+                {
+                    RaiseError("UDP send failed: " + ex.Message);
                 }
             }
         }
