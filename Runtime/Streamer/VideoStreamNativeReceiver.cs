@@ -9,8 +9,10 @@ namespace VideoStream
     {
         [SerializeField] int localPort = 9999;
         [SerializeField] string mime = "video/avc";
-        [SerializeField] bool autoStart = true;
+        [SerializeField] bool autoStart = false;
         [SerializeField] bool publishTexture = true;
+        [SerializeField] bool decodeEnabled = true;
+        [SerializeField] bool drainFrames = true;
 
         readonly byte[] _frameBuffer = new byte[32 * 1024 * 1024];
         Texture2D _outputTexture;
@@ -41,6 +43,18 @@ namespace VideoStream
             set => publishTexture = value;
         }
 
+        public bool DecodeEnabled
+        {
+            get => decodeEnabled;
+            set => decodeEnabled = value;
+        }
+
+        public bool DrainFrames
+        {
+            get => drainFrames;
+            set => drainFrames = value;
+        }
+
         public event Action<byte[], int, int, long> FrameDecoded;
         public event Action<Texture2D, long> FrameRendered;
         public Texture OutputTexture => _outputTexture;
@@ -60,7 +74,10 @@ namespace VideoStream
                 return;
             }
 
-            DrainDecodedFrames();
+            if (decodeEnabled && drainFrames)
+            {
+                DrainDecodedFrames();
+            }
         }
 
         void OnDisable()
@@ -76,8 +93,12 @@ namespace VideoStream
             }
 
             var udpStarted = VideoStreamNative.VSMedia_UdpStart(localPort) == 1;
-            VideoStreamNative.VSMedia_DecoderSetPreviewEnabled(publishTexture ? 1 : 0);
-            _running = udpStarted && VideoStreamNative.VSMedia_DecoderStart(mime) == 1;
+            if (decodeEnabled)
+            {
+                VideoStreamNative.VSMedia_DecoderSetPreviewEnabled(publishTexture ? 1 : 0);
+            }
+            _running = udpStarted &&
+                       (!decodeEnabled || VideoStreamNative.VSMedia_DecoderStart(mime) == 1);
             if (udpStarted && !_running)
             {
                 VideoStreamNative.VSMedia_UdpStop();
@@ -88,7 +109,10 @@ namespace VideoStream
         {
             if (_running)
             {
-                VideoStreamNative.VSMedia_DecoderStop();
+                if (decodeEnabled)
+                {
+                    VideoStreamNative.VSMedia_DecoderStop();
+                }
                 VideoStreamNative.VSMedia_UdpStop();
                 _running = false;
             }
