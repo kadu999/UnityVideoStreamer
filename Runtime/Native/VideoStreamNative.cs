@@ -93,6 +93,12 @@ namespace VideoStream
 
         [DllImport(Library)]
         internal static extern int VSMedia_DecoderStop();
+
+        [DllImport(Library)]
+        internal static extern int VSMedia_DecoderGetOutputWidth();
+
+        [DllImport(Library)]
+        internal static extern int VSMedia_DecoderGetOutputHeight();
     }
 }
 #endif

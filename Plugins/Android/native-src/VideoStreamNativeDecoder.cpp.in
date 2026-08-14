@@ -47,6 +47,8 @@ namespace
     std::vector<uint8_t> gConfiguredCsd;
     ANativeWindow* gOutputWindow = nullptr;
     int32_t gLastFrameId = -1;
+    std::atomic<int32_t> gOutputWidth{0};
+    std::atomic<int32_t> gOutputHeight{0};
     bool gDamaged = false;
     int64_t gLastIdrRequestMs = 0;
 
@@ -183,6 +185,8 @@ namespace
         gDecoderCsdBuffers.clear();
         gConfiguredCsd.clear();
         gDecoderConfigured = false;
+        gOutputWidth.store(0);
+        gOutputHeight.store(0);
     }
 
     void DecoderLoop()
@@ -208,6 +212,8 @@ namespace
                     AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_WIDTH, &width);
                     AMediaFormat_getInt32(format, AMEDIAFORMAT_KEY_HEIGHT, &height);
                     VS_DLOGI("decoder output format %dx%d", width, height);
+                    gOutputWidth.store(width);
+                    gOutputHeight.store(height);
                     AMediaFormat_delete(format);
                 }
                 continue;
@@ -526,6 +532,16 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderStop()
     gDamaged = false;
     gLastIdrRequestMs = 0;
     return 1;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderGetOutputWidth()
+{
+    return gOutputWidth.load();
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderGetOutputHeight()
+{
+    return gOutputHeight.load();
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderSetOutputSurface(void* surface)

@@ -124,6 +124,16 @@ namespace VideoStream
         {
             get { return VideoStreamNative.VSMedia_CameraGetExternalTexture(); }
         }
+
+        public int OutputWidth
+        {
+            get { return decodeEnabled ? VideoStreamNative.VSMedia_DecoderGetOutputWidth() : 0; }
+        }
+
+        public int OutputHeight
+        {
+            get { return decodeEnabled ? VideoStreamNative.VSMedia_DecoderGetOutputHeight() : 0; }
+        }
     }
 }
 #endif
