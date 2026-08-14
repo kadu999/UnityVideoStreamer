@@ -368,6 +368,8 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStart(int localPort)
 
     int sendBuffer = 1024 * 1024;
     setsockopt(fd, SOL_SOCKET, SO_SNDBUF, &sendBuffer, sizeof(sendBuffer));
+    int receiveBuffer = 2 * 1024 * 1024;
+    setsockopt(fd, SOL_SOCKET, SO_RCVBUF, &receiveBuffer, sizeof(receiveBuffer));
 
     gUdpSocket = fd;
     gUdpRunning.store(true);

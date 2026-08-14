@@ -415,9 +415,18 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderFeedPacket(
 
     if (gLastFrameId >= 0 && frameId > gLastFrameId + 1 && (flags & kFlagIdr) == 0)
     {
-        VS_DLOGE("FRAME GAP lost %d frame(s) (%d -> %d), waiting for IDR",
-                 frameId - gLastFrameId - 1, gLastFrameId, frameId);
-        gDamaged = true;
+        const int lostFrames = frameId - gLastFrameId - 1;
+        if (lostFrames > 1)
+        {
+            VS_DLOGE("FRAME GAP lost %d frame(s) (%d -> %d), waiting for IDR",
+                     lostFrames, gLastFrameId, frameId);
+            gDamaged = true;
+        }
+        else
+        {
+            VS_DLOGI("FRAME GAP lost 1 frame (%d -> %d), continuing",
+                     gLastFrameId, frameId);
+        }
     }
     if (frameId > gLastFrameId)
     {
