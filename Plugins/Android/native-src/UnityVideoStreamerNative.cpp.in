@@ -351,9 +351,19 @@ static void UpdateCameraSurfaceTexture()
         return;
     }
 
+    const GLuint cameraTexture = g_cameraTextureId.load();
+    if (cameraTexture != 0)
+    {
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, cameraTexture);
+    }
+
     jclass cls = env->GetObjectClass(gCameraSurfaceTexture);
     if (cls == nullptr)
     {
+        if (cameraTexture != 0)
+        {
+            glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+        }
         return;
     }
     jmethodID mid = env->GetMethodID(cls, "updateTexImage", "()V");
@@ -367,6 +377,10 @@ static void UpdateCameraSurfaceTexture()
         }
     }
     env->DeleteLocalRef(cls);
+    if (cameraTexture != 0)
+    {
+        glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+    }
 }
 
 static void UNITY_INTERFACE_API RenderEvent(int eventId)
