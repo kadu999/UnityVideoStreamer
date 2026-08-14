@@ -332,6 +332,12 @@ static void EnsureCameraTexture()
 
 static void UpdateCameraSurfaceTexture()
 {
+    static uint64_t sCameraUpdateCount = 0;
+    static double sCameraUpdateTotalMs = 0.0;
+    static double sCameraUpdateMaxMs = 0.0;
+
+    const double tCameraStart = NowMs();
+
     EnsureCameraTexture();
     if (gCameraSurfaceTexture == nullptr || g_javaVm == nullptr)
     {
@@ -380,6 +386,20 @@ static void UpdateCameraSurfaceTexture()
     if (cameraTexture != 0)
     {
         glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+    }
+
+    const double cameraElapsedMs = NowMs() - tCameraStart;
+    sCameraUpdateCount++;
+    sCameraUpdateTotalMs += cameraElapsedMs;
+    sCameraUpdateMaxMs = std::max(sCameraUpdateMaxMs, cameraElapsedMs);
+    if (sCameraUpdateCount % 60 == 0)
+    {
+        LOGI("camera updateTexImage count=%llu avg=%.3fms max=%.3fms",
+             static_cast<unsigned long long>(sCameraUpdateCount),
+             sCameraUpdateTotalMs / static_cast<double>(sCameraUpdateCount),
+             sCameraUpdateMaxMs);
+        sCameraUpdateTotalMs = 0.0;
+        sCameraUpdateMaxMs = 0.0;
     }
 }
 
