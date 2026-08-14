@@ -1,6 +1,5 @@
 #if UNITY_ANDROID && !UNITY_EDITOR
 using System;
-using System.Runtime.InteropServices;
 using UnityEngine;
 
 namespace VideoStream
@@ -10,14 +9,10 @@ namespace VideoStream
         [SerializeField] int localPort = 9999;
         [SerializeField] string mime = "video/avc";
         [SerializeField] bool autoStart = false;
-        [SerializeField] bool publishTexture = true;
         [SerializeField] bool decodeEnabled = true;
-        [SerializeField] bool drainFrames = true;
-
-        readonly byte[] _frameBuffer = new byte[32 * 1024 * 1024];
-        Texture2D _outputTexture;
 
         bool _running;
+        bool _surfaceReady;
 
         public int LocalPort
         {
@@ -37,46 +32,17 @@ namespace VideoStream
             set => autoStart = value;
         }
 
-        public bool PublishTexture
-        {
-            get => publishTexture;
-            set => publishTexture = value;
-        }
-
         public bool DecodeEnabled
         {
             get => decodeEnabled;
             set => decodeEnabled = value;
         }
 
-        public bool DrainFrames
-        {
-            get => drainFrames;
-            set => drainFrames = value;
-        }
-
-        public event Action<byte[], int, int, long> FrameDecoded;
-        public event Action<Texture2D, long> FrameRendered;
-        public Texture OutputTexture => _outputTexture;
-
         void OnEnable()
         {
             if (autoStart)
             {
                 StartReceiver();
-            }
-        }
-
-        void Update()
-        {
-            if (!_running)
-            {
-                return;
-            }
-
-            if (decodeEnabled && drainFrames)
-            {
-                DrainDecodedFrames();
             }
         }
 
@@ -92,14 +58,22 @@ namespace VideoStream
                 return;
             }
 
-            var udpStarted = VideoStreamNative.VSMedia_UdpStart(localPort) == 1;
-            if (decodeEnabled)
+            if (decodeEnabled && !_surfaceReady)
             {
-                VideoStreamNative.VSMedia_DecoderSetPreviewEnabled(publishTexture ? 1 : 0);
+                Debug.LogError(
+                    "[VideoStream] Hardware decode requires SetCameraSurface before StartReceiver.");
+                return;
             }
+
+            var udpStarted = VideoStreamNative.VSMedia_UdpStart(localPort) == 1;
+            if (!udpStarted)
+            {
+                return;
+            }
+
             _running = udpStarted &&
                        (!decodeEnabled || VideoStreamNative.VSMedia_DecoderStart(mime) == 1);
-            if (udpStarted && !_running)
+            if (!_running)
             {
                 VideoStreamNative.VSMedia_UdpStop();
             }
@@ -118,66 +92,32 @@ namespace VideoStream
             }
         }
 
-        void DrainDecodedFrames()
+        public bool SetCameraSurface(IntPtr surface, IntPtr surfaceTexture)
         {
-            while (true)
+            if (surface == IntPtr.Zero || surfaceTexture == IntPtr.Zero)
             {
-                int size;
-                int width;
-                int height;
-                long ptsUs;
-                if (VideoStreamNative.VSMedia_DecoderDequeueRgba(
-                        _frameBuffer,
-                        _frameBuffer.Length,
-                        out size,
-                        out width,
-                        out height,
-                        out ptsUs) != 1)
-                {
-                    break;
-                }
-
-                var rgbaSize = width * height * 4;
-                if (size < rgbaSize || rgbaSize > _frameBuffer.Length)
-                {
-                    continue;
-                }
-
-                if (!publishTexture)
-                {
-                    continue;
-                }
-
-                if (FrameDecoded != null)
-                {
-                    var data = new byte[rgbaSize];
-                    Buffer.BlockCopy(_frameBuffer, 0, data, 0, rgbaSize);
-                    FrameDecoded.Invoke(data, width, height, ptsUs);
-                }
-
-                if (_outputTexture == null ||
-                    _outputTexture.width != width ||
-                    _outputTexture.height != height)
-                {
-                    if (_outputTexture != null)
-                    {
-                        Destroy(_outputTexture);
-                    }
-                    _outputTexture = new Texture2D(width, height, TextureFormat.RGBA32, false);
-                }
-
-                var handle = GCHandle.Alloc(_frameBuffer, GCHandleType.Pinned);
-                try
-                {
-                    _outputTexture.LoadRawTextureData(handle.AddrOfPinnedObject(), rgbaSize);
-                }
-                finally
-                {
-                    handle.Free();
-                }
-                _outputTexture.Apply();
-                FrameRendered?.Invoke(_outputTexture, ptsUs);
+                Debug.LogError(
+                    "[VideoStream] Hardware decode Surface output requires both Surface and SurfaceTexture.");
+                _surfaceReady = false;
+                return false;
             }
+
+            var surfaceOk = VideoStreamNative.VSMedia_DecoderSetOutputSurface(surface) == 1;
+            var textureOk = VideoStreamNative.VSMedia_CameraSetSurfaceTexture(surfaceTexture) == 1;
+            _surfaceReady = surfaceOk && textureOk;
+            if (!_surfaceReady)
+            {
+                Debug.LogError(
+                    "[VideoStream] Failed to configure hardware decode Surface output.");
+            }
+            return _surfaceReady;
+        }
+
+        public void RequestSurfaceTextureUpdate()
+        {
+            GL.IssuePluginEvent(
+                VideoStreamNative.GetRenderEventFunc(),
+                VideoStreamNative.GetCameraUpdateEventId());
         }
     }
 }

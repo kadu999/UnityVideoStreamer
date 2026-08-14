@@ -6,6 +6,7 @@
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
 #include <GLES3/gl3.h>
+#include <jni.h>
 
 #include <atomic>
 #include <chrono>
@@ -28,6 +29,8 @@ extern "C" ANativeWindow* VSMedia_CodecGetInputSurface();
 static IUnityInterfaces* g_unityInterfaces = nullptr;
 static IUnityGraphics* g_graphics = nullptr;
 static int g_eventBase = -1;
+static JavaVM* g_javaVm = nullptr;
+static jobject gCameraSurfaceTexture = nullptr;
 
 static std::mutex g_eglMutex;
 static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
@@ -291,8 +294,51 @@ static void ReleaseEglResources()
     g_startMs = 0;
 }
 
+static void UpdateCameraSurfaceTexture()
+{
+    if (gCameraSurfaceTexture == nullptr || g_javaVm == nullptr)
+    {
+        return;
+    }
+
+    JNIEnv* env = nullptr;
+    if (g_javaVm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK)
+    {
+        if (g_javaVm->AttachCurrentThread(&env, nullptr) != JNI_OK)
+        {
+            return;
+        }
+    }
+    if (env == nullptr)
+    {
+        return;
+    }
+
+    jclass cls = env->GetObjectClass(gCameraSurfaceTexture);
+    if (cls == nullptr)
+    {
+        return;
+    }
+    jmethodID mid = env->GetMethodID(cls, "updateTexImage", "()V");
+    if (mid != nullptr)
+    {
+        env->CallVoidMethod(gCameraSurfaceTexture, mid);
+        if (env->ExceptionCheck())
+        {
+            LOGE("SurfaceTexture.updateTexImage failed");
+            env->ExceptionClear();
+        }
+    }
+    env->DeleteLocalRef(cls);
+}
+
 static void UNITY_INTERFACE_API RenderEvent(int eventId)
 {
+    if (eventId == g_eventBase + 1)
+    {
+        UpdateCameraSurfaceTexture();
+        return;
+    }
     if (eventId != g_eventBase || !g_active.load()) return;
 
     std::lock_guard<std::mutex> lock(g_eglMutex);
@@ -420,7 +466,7 @@ extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API UnityPluginLoad(
     g_graphics = unityInterfaces->Get<IUnityGraphics>();
     if (g_graphics != nullptr)
     {
-        g_eventBase = g_graphics->ReserveEventIDRange(1);
+        g_eventBase = g_graphics->ReserveEventIDRange(2);
     }
     else
     {
@@ -443,6 +489,34 @@ extern "C" UNITY_INTERFACE_EXPORT UnityRenderingEvent UNITY_INTERFACE_API GetRen
 extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API GetRenderEventId()
 {
     return g_eventBase;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int UNITY_INTERFACE_API GetCameraUpdateEventId()
+{
+    return g_eventBase + 1;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CameraSetSurfaceTexture(void* surfaceTexture)
+{
+    if (surfaceTexture == nullptr)
+    {
+        LOGE("camera SurfaceTexture is null");
+        return 0;
+    }
+    gCameraSurfaceTexture = static_cast<jobject>(surfaceTexture);
+    LOGI("camera SurfaceTexture set");
+    return 1;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT JavaVM* VSMedia_GetJavaVm()
+{
+    return g_javaVm;
+}
+
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved)
+{
+    g_javaVm = vm;
+    return JNI_VERSION_1_6;
 }
 
 extern "C" UNITY_INTERFACE_EXPORT void UNITY_INTERFACE_API SetActive(int active)

@@ -7,6 +7,7 @@ transports can be layered underneath the same frame protocol.
 ## Features
 
 - Android H.264/HEVC encoding through `MediaCodec`.
+- Android H.264/HEVC decoding through `MediaCodec` Surface output only.
 - Captures a Unity `Camera` into a `RenderTexture` and blits it directly to a
   `MediaCodec.createInputSurface()` through an Android native EGL plugin.
 - No `AsyncGPUReadback` or CPU RGBA-to-NV12 conversion in the streaming path.
@@ -59,6 +60,8 @@ the existing `UdpFramer`. The receiver should be one of:
 ## Platform Notes
 
 - The encoder backend currently targets Android builds.
+- The decoder backend requires a `Surface`/`SurfaceTexture` output; the CPU
+  RGBA decode path has been removed so decode is always hardware-backed.
 - The native Surface plugin requires OpenGLES3. The package forces this API
   during Android builds through `AndroidGraphicsSettings`.
 - `UnityVideoStreamer` uses a dedicated camera render texture; the source camera

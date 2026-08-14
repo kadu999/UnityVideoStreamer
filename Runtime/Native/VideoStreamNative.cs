@@ -15,6 +15,12 @@ namespace VideoStream
         internal static extern int GetRenderEventId();
 
         [DllImport(Library)]
+        internal static extern int GetCameraUpdateEventId();
+
+        [DllImport(Library)]
+        internal static extern int VSMedia_CameraSetSurfaceTexture(IntPtr surfaceTexture);
+
+        [DllImport(Library)]
         internal static extern void SetActive(int active);
 
         [DllImport(Library)]
@@ -80,16 +86,7 @@ namespace VideoStream
         internal static extern int VSMedia_DecoderProcessPackets();
 
         [DllImport(Library)]
-        internal static extern int VSMedia_DecoderSetPreviewEnabled(int enabled);
-
-        [DllImport(Library)]
-        internal static extern int VSMedia_DecoderDequeueRgba(
-            [Out] byte[] buffer,
-            int capacity,
-            out int size,
-            out int width,
-            out int height,
-            out long ptsUs);
+        internal static extern int VSMedia_DecoderSetOutputSurface(IntPtr surface);
 
         [DllImport(Library)]
         internal static extern int VSMedia_DecoderStop();
