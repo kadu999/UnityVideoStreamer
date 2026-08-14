@@ -119,6 +119,11 @@ namespace VideoStream
                 VideoStreamNative.GetRenderEventFunc(),
                 VideoStreamNative.GetCameraUpdateEventId());
         }
+
+        public int CameraExternalTextureId
+        {
+            get { return VideoStreamNative.VSMedia_CameraGetExternalTexture(); }
+        }
     }
 }
 #endif

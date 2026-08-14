@@ -20,6 +20,9 @@ extern "C" ANativeWindow* VSMedia_CodecGetInputSurface();
 #ifndef GL_FRAMEBUFFER_SRGB
 #define GL_FRAMEBUFFER_SRGB 0x8DB9
 #endif
+#ifndef GL_TEXTURE_EXTERNAL_OES
+#define GL_TEXTURE_EXTERNAL_OES 0x8D65
+#endif
 
 #define LOG_TAG "UnityVideoStreamerNative"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)
@@ -31,6 +34,7 @@ static IUnityGraphics* g_graphics = nullptr;
 static int g_eventBase = -1;
 static JavaVM* g_javaVm = nullptr;
 static jobject gCameraSurfaceTexture = nullptr;
+static std::atomic<uint32_t> g_cameraTextureId{0};
 
 static std::mutex g_eglMutex;
 static EGLDisplay g_eglDisplay = EGL_NO_DISPLAY;
@@ -294,8 +298,41 @@ static void ReleaseEglResources()
     g_startMs = 0;
 }
 
+static void EnsureCameraTexture()
+{
+    if (g_cameraTextureId.load() != 0)
+    {
+        return;
+    }
+
+    GLuint texture = 0;
+    glGenTextures(1, &texture);
+    if (texture == 0)
+    {
+        LOGE("glGenTextures failed for camera OES texture");
+        return;
+    }
+
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, texture);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_EXTERNAL_OES, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glBindTexture(GL_TEXTURE_EXTERNAL_OES, 0);
+
+    GLenum error = glGetError();
+    if (error != GL_NO_ERROR)
+    {
+        LOGE("camera OES texture setup error 0x%x", error);
+    }
+
+    g_cameraTextureId.store(static_cast<uint32_t>(texture));
+    LOGI("camera external texture created id=%u", texture);
+}
+
 static void UpdateCameraSurfaceTexture()
 {
+    EnsureCameraTexture();
     if (gCameraSurfaceTexture == nullptr || g_javaVm == nullptr)
     {
         return;
@@ -506,6 +543,11 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CameraSetSurfaceTexture(void* surf
     gCameraSurfaceTexture = static_cast<jobject>(surfaceTexture);
     LOGI("camera SurfaceTexture set");
     return 1;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CameraGetExternalTexture()
+{
+    return static_cast<int>(g_cameraTextureId.load());
 }
 
 extern "C" UNITY_INTERFACE_EXPORT JavaVM* VSMedia_GetJavaVm()

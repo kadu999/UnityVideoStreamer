@@ -21,6 +21,9 @@ namespace VideoStream
         internal static extern int VSMedia_CameraSetSurfaceTexture(IntPtr surfaceTexture);
 
         [DllImport(Library)]
+        internal static extern int VSMedia_CameraGetExternalTexture();
+
+        [DllImport(Library)]
         internal static extern void SetActive(int active);
 
         [DllImport(Library)]
