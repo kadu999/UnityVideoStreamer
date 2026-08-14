@@ -43,6 +43,11 @@ namespace
     std::atomic<int> gIdrRequestCount{0};
     std::atomic<uint32_t> gLastSenderIp{0};
     std::atomic<uint16_t> gLastSenderPort{0};
+    std::atomic<uint64_t> gUdpSentFrames{0};
+    std::atomic<uint64_t> gUdpSentBytes{0};
+    std::atomic<uint64_t> gUdpReceivedFrames{0};
+    std::atomic<uint64_t> gUdpReceivedBytes{0};
+    std::atomic<uint64_t> gUdpReceivedDatagrams{0};
 
     struct PendingFrame
     {
@@ -165,11 +170,17 @@ namespace
             return;
         }
 
+        const size_t packetSize = packet.size();
         uint32_t flags = (static_cast<uint32_t>(packet[16]) << 8) |
                          static_cast<uint32_t>(packet[17]);
         if ((flags & 0x0040) != 0)
         {
             gIdrRequestCount.fetch_add(1);
+        }
+        else
+        {
+            gUdpReceivedFrames.fetch_add(1);
+            gUdpReceivedBytes.fetch_add(packetSize);
         }
 
         std::lock_guard<std::mutex> lock(gUdpReceiveMutex);
@@ -182,6 +193,7 @@ namespace
         {
             return;
         }
+        gUdpReceivedDatagrams.fetch_add(1);
 
         uint16_t index = static_cast<uint16_t>(
             (static_cast<uint32_t>(data[2]) << 8) | data[3]);
@@ -273,6 +285,32 @@ namespace
             gLastSenderIp.store(ntohl(remote.sin_addr.s_addr));
             gLastSenderPort.store(ntohs(remote.sin_port));
             HandleFragment(buffer.data(), static_cast<int>(length));
+
+            static int64_t lastRecvStatsMs = NowMs();
+            static uint64_t lastRecvFrames = 0;
+            static uint64_t lastRecvBytes = 0;
+            static uint64_t lastRecvDatagrams = 0;
+            const int64_t nowMs = NowMs();
+            if (nowMs - lastRecvStatsMs >= 5000)
+            {
+                const double dtSec = (nowMs - lastRecvStatsMs) / 1000.0;
+                const uint64_t frames = gUdpReceivedFrames.load();
+                const uint64_t bytes = gUdpReceivedBytes.load();
+                const uint64_t datagrams = gUdpReceivedDatagrams.load();
+                const uint64_t datagramDelta = datagrams - lastRecvDatagrams;
+                const double fps = (frames - lastRecvFrames) / dtSec;
+                const double mbps = (bytes - lastRecvBytes) * 8.0 / dtSec / 1000000.0;
+                VS_UDP_LOGI("recv stats fps=%.1f frames=%llu bytes=%llu datagrams=%llu bw=%.2fMbps",
+                            fps,
+                            static_cast<unsigned long long>(frames),
+                            static_cast<unsigned long long>(bytes),
+                            static_cast<unsigned long long>(datagramDelta),
+                            mbps);
+                lastRecvStatsMs = nowMs;
+                lastRecvFrames = frames;
+                lastRecvBytes = bytes;
+                lastRecvDatagrams = datagrams;
+            }
         }
     }
 
@@ -337,6 +375,30 @@ namespace
                             frame.targets.size(),
                             head[0], head[1], head[2], head[3],
                             head[4], head[5], head[6], head[7]);
+            }
+
+            gUdpSentFrames.fetch_add(1);
+            gUdpSentBytes.fetch_add(static_cast<uint64_t>(frame.size));
+
+            static int64_t lastSendStatsMs = NowMs();
+            static uint64_t lastSendFrames = 0;
+            static uint64_t lastSendBytes = 0;
+            const int64_t nowMs = NowMs();
+            if (nowMs - lastSendStatsMs >= 5000)
+            {
+                const double dtSec = (nowMs - lastSendStatsMs) / 1000.0;
+                const uint64_t frames = gUdpSentFrames.load();
+                const uint64_t bytes = gUdpSentBytes.load();
+                const double fps = (frames - lastSendFrames) / dtSec;
+                const double mbps = (bytes - lastSendBytes) * 8.0 / dtSec / 1000000.0;
+                VS_UDP_LOGI("send stats fps=%.1f frames=%llu bytes=%llu bw=%.2fMbps",
+                            fps,
+                            static_cast<unsigned long long>(frames),
+                            static_cast<unsigned long long>(bytes),
+                            mbps);
+                lastSendStatsMs = nowMs;
+                lastSendFrames = frames;
+                lastSendBytes = bytes;
             }
         }
     }
@@ -412,6 +474,11 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpStop()
     gIdrRequestCount.store(0);
     gLastSenderIp.store(0);
     gLastSenderPort.store(0);
+    gUdpSentFrames.store(0);
+    gUdpSentBytes.store(0);
+    gUdpReceivedFrames.store(0);
+    gUdpReceivedBytes.store(0);
+    gUdpReceivedDatagrams.store(0);
     return 1;
 }
 

@@ -47,6 +47,9 @@ namespace
     std::vector<uint8_t> gConfiguredCsd;
     ANativeWindow* gOutputWindow = nullptr;
     int32_t gLastFrameId = -1;
+    std::atomic<uint64_t> gDecoderFedFrames{0};
+    std::atomic<uint64_t> gDecoderOutputFrames{0};
+    std::atomic<uint64_t> gDecoderGapFrames{0};
     std::atomic<int32_t> gOutputWidth{0};
     std::atomic<int32_t> gOutputHeight{0};
     bool gDamaged = false;
@@ -187,6 +190,9 @@ namespace
         gDecoderConfigured = false;
         gOutputWidth.store(0);
         gOutputHeight.store(0);
+        gDecoderFedFrames.store(0);
+        gDecoderOutputFrames.store(0);
+        gDecoderGapFrames.store(0);
     }
 
     void DecoderLoop()
@@ -231,6 +237,7 @@ namespace
             }
 
             AMediaCodec_releaseOutputBuffer(codec, index, true);
+            gDecoderOutputFrames.fetch_add(1);
         }
     }
 
@@ -416,6 +423,7 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderFeedPacket(
     if (gLastFrameId >= 0 && frameId > gLastFrameId + 1 && (flags & kFlagIdr) == 0)
     {
         const int lostFrames = frameId - gLastFrameId - 1;
+        gDecoderGapFrames.fetch_add(static_cast<uint64_t>(lostFrames));
         if (lostFrames > 1)
         {
             VS_DLOGE("FRAME GAP lost %d frame(s) (%d -> %d), waiting for IDR",
@@ -488,6 +496,10 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderProcessPackets()
 {
     static thread_local std::vector<uint8_t> buffer(256 * 1024);
     int processed = 0;
+    static int64_t lastStatsMs = NowMs();
+    static uint64_t lastFedFrames = 0;
+    static uint64_t lastOutputFrames = 0;
+    static uint64_t lastGapFrames = 0;
     while (true)
     {
         int size = 0;
@@ -512,7 +524,27 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderProcessPackets()
         if (VSMedia_DecoderFeedPacket(buffer.data(), size) == 1)
         {
             ++processed;
+            gDecoderFedFrames.fetch_add(1);
         }
+    }
+
+    const int64_t nowMs = NowMs();
+    if (nowMs - lastStatsMs >= 5000)
+    {
+        const double dtSec = (nowMs - lastStatsMs) / 1000.0;
+        const uint64_t fedFrames = gDecoderFedFrames.load();
+        const uint64_t outputFrames = gDecoderOutputFrames.load();
+        const uint64_t gapFrames = gDecoderGapFrames.load();
+        const uint64_t gapDelta = gapFrames - lastGapFrames;
+        VS_DLOGI("decode stats fed=%.1ffps out=%.1ffps gaps=%llu gapDelta=%llu",
+                 (fedFrames - lastFedFrames) / dtSec,
+                 (outputFrames - lastOutputFrames) / dtSec,
+                 static_cast<unsigned long long>(gapFrames),
+                 static_cast<unsigned long long>(gapDelta));
+        lastStatsMs = nowMs;
+        lastFedFrames = fedFrames;
+        lastOutputFrames = outputFrames;
+        lastGapFrames = gapFrames;
     }
     return processed;
 }
