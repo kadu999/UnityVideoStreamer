@@ -27,14 +27,16 @@ namespace VideoStream
         public readonly bool IsKeyFrame;
         public readonly string MimeType;
         public readonly long PtsUs;
+        public readonly float EncodeMs;
 
-        public EncodedFrame(byte[] data, bool isConfig, bool isKeyFrame, string mimeType, long ptsUs)
+        public EncodedFrame(byte[] data, bool isConfig, bool isKeyFrame, string mimeType, long ptsUs, float encodeMs = 0f)
         {
             Data = data;
             IsConfig = isConfig;
             IsKeyFrame = isKeyFrame;
             MimeType = mimeType ?? "video/avc";
             PtsUs = ptsUs;
+            EncodeMs = encodeMs;
         }
     }
 

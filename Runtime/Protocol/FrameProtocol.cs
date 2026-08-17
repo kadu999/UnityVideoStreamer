@@ -23,6 +23,8 @@ namespace VideoStream
         public bool IsLatencyProbe => (Flags & FrameProtocol.FlagLatencyProbe) != 0;
         public bool IsAvc => (Flags & FrameProtocol.FlagCodecAvc) != 0;
         public bool IsHevc => (Flags & FrameProtocol.FlagCodecHevc) != 0;
+        public bool IsCameraStart => (Flags & FrameProtocol.FlagCameraStart) != 0;
+        public bool IsCameraStop => (Flags & FrameProtocol.FlagCameraStop) != 0;
     }
 
     internal static class FrameProtocol
@@ -39,6 +41,8 @@ namespace VideoStream
         public const ushort FlagDisconnect = 0x0080;
         public const ushort FlagCameraSubscribe = 0x0100;
         public const ushort FlagLatencyProbe = 0x0200;
+        public const ushort FlagCameraStart = 0x0400;
+        public const ushort FlagCameraStop = 0x0800;
 
         public static FrameHeader ParseHeader(byte[] data, int offset, int length)
         {

@@ -35,6 +35,7 @@ namespace VideoStream
         IUnityVideoEncoder _encoder;
         UdpTargetDiscovery _discovery;
         UnityFrameCapture _capture;
+        RttProbe _rttProbe;
         Coroutine _captureCoroutine;
         volatile bool _streaming;
         long _encodedFrameLogCount;
@@ -97,6 +98,8 @@ namespace VideoStream
 
         void Update()
         {
+            TraceUploader.Tick();
+            _rttProbe?.Tick();
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (_encoder is NativeMediaCodecEncoder nativeEncoder && nativeEncoder.TakeIdrRequest())
             {
@@ -246,6 +249,10 @@ namespace VideoStream
                 _captureCoroutine = StartCoroutine(CaptureLoop());
                 _encoder.RequestKeyFrame();
 
+                // WiFi round-trip latency probe against the gateway (PIPETRACE ev=RTT).
+                _rttProbe = new RttProbe(() => targetAddress, () => targetPort);
+                _rttProbe.Start();
+
                 Debug.Log($"[VideoStream] Streaming {width}x{height} {frameRate}fps static target");
             }
         }
@@ -269,6 +276,13 @@ namespace VideoStream
 
         void CleanupStreaming()
         {
+            TraceUploader.FlushNow();
+            if (_rttProbe != null)
+            {
+                _rttProbe.Stop();
+                _rttProbe = null;
+            }
+
             if (_capture != null)
             {
                 _capture.Dispose();

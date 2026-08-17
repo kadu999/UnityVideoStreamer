@@ -1,7 +1,9 @@
 {
   "name": "VideoStream",
   "rootNamespace": "VideoStream",
-  "references": [],
+  "references": [
+    "UnityEngine.UnityWebRequestModule"
+  ],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

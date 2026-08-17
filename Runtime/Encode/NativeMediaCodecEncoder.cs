@@ -83,10 +83,19 @@ namespace VideoStream
                     break;
                 }
 
+                // Encode latency = now - encoder input PTS (covers input-surface queueing too).
+                var encodeMs = (NowNs() - ptsUs * 1000L) / 1e6f;
                 var data = new byte[size];
                 Buffer.BlockCopy(_frameBuffer, 0, data, 0, size);
-                FrameEncoded?.Invoke(new EncodedFrame(data, isConfig, isKeyFrame, _mime, ptsUs));
+                FrameEncoded?.Invoke(new EncodedFrame(data, isConfig, isKeyFrame, _mime, ptsUs, encodeMs));
             }
+        }
+
+        static long NowNs()
+        {
+            // Monotonic high-res clock; double avoids long overflow, ms-grade precision is enough.
+            return (long)((double)System.Diagnostics.Stopwatch.GetTimestamp() * 1_000_000_000.0
+                / System.Diagnostics.Stopwatch.Frequency);
         }
 
         public void RequestKeyFrame()
@@ -103,6 +112,16 @@ namespace VideoStream
 
             var frameId = Interlocked.Increment(ref _frameId) - 1;
             var sequence = (uint)Interlocked.Increment(ref _sequence);
+            if (!frame.IsConfig)
+            {
+                // PIPETRACE: encode-out and send events (sampled by frameId).
+                TraceUploader.TraceFrame(
+                    $"ev=ENC_OUT frame={frameId} pts={frame.PtsUs} size={frame.Data.Length} enc_ms={frame.EncodeMs:F1}",
+                    frameId);
+                TraceUploader.TraceFrame(
+                    $"ev=SEND frame={frameId} bytes={frame.Data.Length} dgrams={TraceUploader.FragmentCount(frame.Data.Length)}",
+                    frameId);
+            }
             VideoStreamNative.VSMedia_UdpSendFrame(
                 frameId,
                 frame.PtsUs,
