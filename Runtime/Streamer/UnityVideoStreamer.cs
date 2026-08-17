@@ -37,6 +37,7 @@ namespace VideoStream
         UnityFrameCapture _capture;
         RttProbe _rttProbe;
         Coroutine _captureCoroutine;
+        int _captureTick;
         volatile bool _streaming;
         long _encodedFrameLogCount;
         float _nextCaptureTime;
@@ -103,6 +104,7 @@ namespace VideoStream
 #if UNITY_ANDROID && !UNITY_EDITOR
             if (_encoder is NativeMediaCodecEncoder nativeEncoder && nativeEncoder.TakeIdrRequest())
             {
+                TraceUploader.Log("ev=IDR_REQ_RECV");
                 nativeEncoder.RequestKeyFrame();
             }
 #endif
@@ -317,10 +319,25 @@ namespace VideoStream
 
                 if (_streaming && _capture != null)
                 {
+                    var t0 = System.Diagnostics.Stopwatch.GetTimestamp();
                     _capture.RenderFrameToEncoder(_encoder);
+                    var t1 = System.Diagnostics.Stopwatch.GetTimestamp();
                     _encoder.PollEncodedFrames();
+                    var t2 = System.Diagnostics.Stopwatch.GetTimestamp();
+                    if (TraceUploader.ShouldTraceFrame(_captureTick))
+                    {
+                        TraceUploader.TraceFrame(
+                            $"ev=CAPTURE render_ms={ToMs(t1 - t0):F1} poll_ms={ToMs(t2 - t1):F1}",
+                            _captureTick);
+                    }
+                    _captureTick++;
                 }
             }
+        }
+
+        static float ToMs(long ticks)
+        {
+            return (float)(ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
         }
 
         void HandleFrameEncoded(EncodedFrame frame)
