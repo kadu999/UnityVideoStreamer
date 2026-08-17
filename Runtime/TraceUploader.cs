@@ -25,6 +25,13 @@ namespace VideoStream
         public static string ServerUrl = "http://192.168.1.33:9101";
 
         /// <summary>
+        /// Test-session id. When set, uploads carry X-Run=&lt;sessionId&gt; and the
+        /// log-server uses it as the run folder name, so one test session stays in a
+        /// single runs/&lt;sessionId&gt;/ directory.
+        /// </summary>
+        public static string SessionId = "";
+
+        /// <summary>
         /// Also mirror each PIPETRACE line to logcat (adb fallback). Default OFF:
         /// Debug.Log on Android runs on the main thread and can jitter the frame
         /// pacing, so tracing normally uploads without touching logcat.
@@ -129,6 +136,10 @@ namespace VideoStream
             req.SetRequestHeader("Content-Type", "text/plain; charset=utf-8");
             req.SetRequestHeader("X-Device", "ctrl");
             req.SetRequestHeader("X-Append", "1");
+            if (!string.IsNullOrEmpty(SessionId))
+            {
+                req.SetRequestHeader("X-Run", SessionId);
+            }
             req.timeout = 3;
             var op = req.SendWebRequest();
             op.completed += _ =>

@@ -251,6 +251,11 @@ namespace VideoStream
                 _captureCoroutine = StartCoroutine(CaptureLoop());
                 _encoder.RequestKeyFrame();
 
+                // Test-session id: unique per connection, shared with the gateway so
+                // both devices' logs land in one runs/<sessionId>/ folder.
+                TraceUploader.SessionId = DateTime.Now.ToString("yyyyMMdd_HHmmss") + "_" + UnityEngine.Random.Range(1000, 9999);
+                SendSessionId();
+
                 // WiFi round-trip latency probe against the gateway (PIPETRACE ev=RTT).
                 _rttProbe = new RttProbe(() => targetAddress, () => targetPort);
                 _rttProbe.Start();
@@ -338,6 +343,49 @@ namespace VideoStream
         static float ToMs(long ticks)
         {
             return (float)(ticks * 1000.0 / System.Diagnostics.Stopwatch.Frequency);
+        }
+
+        /// <summary>
+        /// Announce the session id to the gateway via a FLAG_SESSION (0x1000)
+        /// FrameProtocol packet so gateway logs share the same runs/&lt;sessionId&gt;/ folder.
+        /// </summary>
+        void SendSessionId()
+        {
+            const ushort FlagSession = 0x1000;
+            const int HeaderSize = 18;
+            var id = TraceUploader.SessionId;
+            if (string.IsNullOrEmpty(id) || string.IsNullOrEmpty(targetAddress) || targetPort <= 0)
+            {
+                return;
+            }
+            var payload = System.Text.Encoding.UTF8.GetBytes(id);
+            var packet = new byte[HeaderSize + payload.Length];
+            // frameId=0, ptsUs=0, naluSize=payload.Length, flags=0x1000 (big-endian)
+            WriteInt32(packet, 12, payload.Length);
+            packet[16] = (byte)(FlagSession >> 8);
+            packet[17] = (byte)(FlagSession & 0xFF);
+            System.Array.Copy(payload, 0, packet, HeaderSize, payload.Length);
+            try
+            {
+                using (var udp = new System.Net.Sockets.UdpClient())
+                {
+                    udp.Connect(targetAddress, targetPort);
+                    udp.Send(packet, packet.Length);
+                }
+                Debug.Log("[VideoStream] Session id sent: " + id);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning("[VideoStream] Session id send failed: " + ex.Message);
+            }
+        }
+
+        static void WriteInt32(byte[] buf, int off, int value)
+        {
+            buf[off] = (byte)(value >> 24);
+            buf[off + 1] = (byte)(value >> 16);
+            buf[off + 2] = (byte)(value >> 8);
+            buf[off + 3] = (byte)value;
         }
 
         void HandleFrameEncoded(EncodedFrame frame)

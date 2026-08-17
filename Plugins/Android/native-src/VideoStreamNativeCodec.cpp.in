@@ -212,6 +212,8 @@ namespace
         while (gCodecRunning.load())
         {
             AMediaCodecBufferInfo info{};
+            // 10ms poll: kept at the platform default; shorter timeouts only spin
+            // the background thread without reducing main-thread poll cost.
             ssize_t index = AMediaCodec_dequeueOutputBuffer(gCodec, &info, 10000);
             if (index < 0)
             {
