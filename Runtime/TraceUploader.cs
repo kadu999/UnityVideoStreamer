@@ -24,6 +24,13 @@ namespace VideoStream
         public static int EveryNFrames = 30;
         public static string ServerUrl = "http://192.168.1.33:9101";
 
+        /// <summary>
+        /// Also mirror each PIPETRACE line to logcat (adb fallback). Default OFF:
+        /// Debug.Log on Android runs on the main thread and can jitter the frame
+        /// pacing, so tracing normally uploads without touching logcat.
+        /// </summary>
+        public static bool LogToLogcat = false;
+
         const int FlushIntervalMs = 5000;
         const int MaxBufferedLines = 4000;
         const int MaxDatagramPayload = 1400; // matches UdpFramer on the receiver
@@ -38,11 +45,19 @@ namespace VideoStream
             Append(line);
         }
 
+        /// <summary>
+        /// Cheap sampling check — call BEFORE building the trace string so frame
+        /// events do no string work on the streaming path when not sampled.
+        /// </summary>
+        public static bool ShouldTraceFrame(int frameId)
+        {
+            return Enabled && EveryNFrames > 0 && frameId >= 0 && frameId % EveryNFrames == 0;
+        }
+
         /// <summary>Frame event, sampled 1 in EveryNFrames by frameId.</summary>
         public static void TraceFrame(string line, int frameId)
         {
-            if (!Enabled) return;
-            if (EveryNFrames <= 0 || frameId < 0 || frameId % EveryNFrames != 0) return;
+            if (!ShouldTraceFrame(frameId)) return;
             Append(line);
         }
 
@@ -74,8 +89,11 @@ namespace VideoStream
         {
             if (!Enabled) return;
             var entry = $"[PIPETRACE] dev=ctrl {line} ts={NowNs()}";
-            // Also visible in logcat so adb logcat remains a fallback capture path.
-            UnityEngine.Debug.Log(entry);
+            if (LogToLogcat)
+            {
+                // Optional adb fallback; off by default to keep the main thread clean.
+                UnityEngine.Debug.Log(entry);
+            }
             lock (Lock)
             {
                 Buffer.Add(entry);

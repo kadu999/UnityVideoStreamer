@@ -31,6 +31,9 @@ namespace VideoStream
         volatile bool _running;
         int _probeId;
         float _nextProbeTime;
+        string _cachedAddress;
+        int _cachedPort;
+        IPEndPoint _cachedEp;
 
         public RttProbe(Func<string> getAddress, Func<int> getPort)
         {
@@ -82,7 +85,13 @@ namespace VideoStream
                 lock (_lock)
                 {
                     if (_client == null) return;
-                    _client.Send(packet, packet.Length, new IPEndPoint(IPAddress.Parse(address), port));
+                    if (_cachedEp == null || _cachedAddress != address || _cachedPort != port)
+                    {
+                        _cachedAddress = address;
+                        _cachedPort = port;
+                        _cachedEp = new IPEndPoint(IPAddress.Parse(address), port);
+                    }
+                    _client.Send(packet, packet.Length, _cachedEp);
                 }
             }
             catch (Exception ex)

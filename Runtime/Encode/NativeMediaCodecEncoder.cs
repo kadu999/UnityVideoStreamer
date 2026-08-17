@@ -14,6 +14,7 @@ namespace VideoStream
         int _frameId;
         int _sequence;
         volatile bool _running;
+        long _encoderStartNs;
 
         public event Action<EncodedFrame> FrameEncoded;
         public event Action<string> Error;
@@ -49,6 +50,7 @@ namespace VideoStream
 
                 _mime = config.MimeType;
                 _running = true;
+                _encoderStartNs = NowNs(); // MediaCodec surface PTS starts ~here (us from 0)
                 VideoStreamNative.SetActive(1);
                 Debug.Log($"[VideoStream] Native encoder started: {config.Width}x{config.Height} {config.FrameRate}fps {config.MimeType}");
                 return true;
@@ -83,8 +85,12 @@ namespace VideoStream
                     break;
                 }
 
-                // Encode latency = now - encoder input PTS (covers input-surface queueing too).
-                var encodeMs = (NowNs() - ptsUs * 1000L) / 1e6f;
+                // Encode latency = output time - input time. MediaCodec surface PTS is
+                // a small us counter starting at encoder start, so map it onto the same
+                // Stopwatch clock: inputNs = encoderStartNs + ptsUs*1000.
+                var outputNs = NowNs();
+                var inputNs = _encoderStartNs + ptsUs * 1000L;
+                var encodeMs = (outputNs - inputNs) / 1e6f;
                 var data = new byte[size];
                 Buffer.BlockCopy(_frameBuffer, 0, data, 0, size);
                 FrameEncoded?.Invoke(new EncodedFrame(data, isConfig, isKeyFrame, _mime, ptsUs, encodeMs));
@@ -112,9 +118,10 @@ namespace VideoStream
 
             var frameId = Interlocked.Increment(ref _frameId) - 1;
             var sequence = (uint)Interlocked.Increment(ref _sequence);
-            if (!frame.IsConfig)
+            // PIPETRACE: check sampling BEFORE building strings so the frame path
+            // does zero string work when the frame is not traced.
+            if (!frame.IsConfig && TraceUploader.ShouldTraceFrame(frameId))
             {
-                // PIPETRACE: encode-out and send events (sampled by frameId).
                 TraceUploader.TraceFrame(
                     $"ev=ENC_OUT frame={frameId} pts={frame.PtsUs} size={frame.Data.Length} enc_ms={frame.EncodeMs:F1}",
                     frameId);
