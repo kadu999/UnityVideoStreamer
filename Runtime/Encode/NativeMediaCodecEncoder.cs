@@ -1,5 +1,6 @@
 #if UNITY_ANDROID && !UNITY_EDITOR
 using System;
+using System.Collections.Generic;
 using System.Threading;
 using UnityEngine;
 
@@ -14,10 +15,49 @@ namespace VideoStream
         int _frameId;
         volatile bool _running;
 
+        // 帧缓冲对象池：PollEncodedFrames 每帧 new byte[size] 造成 60 次/秒分配，
+        // 周期性触发 GC 停顿（表现为每隔几秒 60->55fps 计数跳动）。池化后复用缓冲区。
+        const int PoolMaxBuffers = 8;
+        const int PoolMaxTotalBytes = 1 << 20; // 1MB
+        readonly object _poolLock = new object();
+        readonly List<byte[]> _pool = new List<byte[]>();
+        int _poolBytes;
+
         public event Action<EncodedFrame> FrameEncoded;
         public event Action<string> Error;
 
         public bool IsRunning => _running;
+
+        byte[] RentBuffer(int minSize)
+        {
+            lock (_poolLock)
+            {
+                for (int i = 0; i < _pool.Count; i++)
+                {
+                    if (_pool[i].Length >= minSize)
+                    {
+                        var buf = _pool[i];
+                        _pool.RemoveAt(i);
+                        _poolBytes -= buf.Length;
+                        return buf;
+                    }
+                }
+            }
+            return new byte[minSize];
+        }
+
+        void ReturnBuffer(byte[] buf)
+        {
+            lock (_poolLock)
+            {
+                if (_pool.Count >= PoolMaxBuffers || _poolBytes + buf.Length > PoolMaxTotalBytes)
+                {
+                    return; // 超上限直接丢弃，交给 GC
+                }
+                _pool.Add(buf);
+                _poolBytes += buf.Length;
+            }
+        }
 
         public bool Start(VideoStreamConfig config)
         {
@@ -89,9 +129,13 @@ namespace VideoStream
 
                 // A3: encode latency now comes from the native side (same plugin clock,
                 // measured at dequeue time) — no C# poll-cadence noise in enc_ms.
-                var data = new byte[size];
+                // 帧缓冲对象池：复用缓冲区，消除每帧 new byte[] 的 GC 压力。
+                var data = RentBuffer(size);
                 Buffer.BlockCopy(_frameBuffer, 0, data, 0, size);
                 FrameEncoded?.Invoke(new EncodedFrame(data, isConfig, isKeyFrame, _mime, ptsUs, encodeMs));
+                // 事件消费方（UnityVideoStreamer.HandleFrameEncoded）是同步的且不持有
+                // 引用（native-send 已把数据发出，C# 侧只用 size 做 trace），可安全回收。
+                ReturnBuffer(data);
             }
         }
 
