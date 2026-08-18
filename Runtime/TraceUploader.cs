@@ -38,7 +38,10 @@ namespace VideoStream
         /// </summary>
         public static bool LogToLogcat = false;
 
-        const int FlushIntervalMs = 5000;
+        // Flush every 10s (was 5s): the main-thread string.Join + request build
+        // was a periodic cost on the render loop (60->55fps dips). 10s cadence
+        // is still fine for run analysis.
+        const int FlushIntervalMs = 10000;
         const int MaxBufferedLines = 4000;
         const int MaxDatagramPayload = 1400; // matches UdpFramer on the receiver
 

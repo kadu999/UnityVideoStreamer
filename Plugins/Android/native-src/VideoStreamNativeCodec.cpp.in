@@ -302,7 +302,9 @@ namespace
                         ++s_sequence);
                 }
 
-                if (++logCount <= 5 || logCount % 60 == 0)
+                // Log cadence 1s->10s to reduce logcat pressure (which was
+                // periodically stalling the main/render threads).
+                if (++logCount <= 5 || logCount % 600 == 0)
                 {
                     uint8_t head[8] = {};
                     std::memcpy(head, frame.data.data(),

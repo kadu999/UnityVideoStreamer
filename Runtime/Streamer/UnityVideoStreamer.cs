@@ -37,6 +37,8 @@ namespace VideoStream
         UnityFrameCapture _capture;
         RttProbe _rttProbe;
         Coroutine _captureCoroutine;
+        Thread _gcMonitorThread;
+        volatile bool _gcMonitorRunning;
         int _captureTick;
         volatile bool _streaming;
         long _encodedFrameLogCount;
@@ -250,6 +252,7 @@ namespace VideoStream
                 _nextCaptureTime = 0f;
                 _captureCoroutine = StartCoroutine(CaptureLoop());
                 _encoder.RequestKeyFrame();
+                StartGcMonitor();
 
                 // Test-session id: unique per connection, shared with the gateway so
                 // both devices' logs land in one runs/<sessionId>/ folder.
@@ -281,9 +284,52 @@ namespace VideoStream
             }
         }
 
+        /// <summary>
+        /// GC pause monitor (diagnostic): a managed background thread sleeps in a
+        /// tight loop; whenever the GC stops the world (all managed threads), this
+        /// thread's own loop gap grows. Gaps &gt; 3ms are logged as ev=GC_PAUSE so a
+        /// run can directly show how big the GC stalls actually are.
+        /// </summary>
+        void StartGcMonitor()
+        {
+            if (_gcMonitorRunning) return;
+            _gcMonitorRunning = true;
+            _gcMonitorThread = new Thread(() =>
+            {
+                long last = System.Diagnostics.Stopwatch.GetTimestamp();
+                while (_gcMonitorRunning)
+                {
+                    Thread.Sleep(1);
+                    long now = System.Diagnostics.Stopwatch.GetTimestamp();
+                    long gapUs = (now - last) * 1_000_000L / System.Diagnostics.Stopwatch.Frequency;
+                    last = now;
+                    if (gapUs > 3000)
+                    {
+                        TraceUploader.Log($"ev=GC_PAUSE ms={gapUs / 1000.0:F1}");
+                    }
+                }
+            })
+            {
+                IsBackground = true,
+                Name = "GcPauseMonitor"
+            };
+            _gcMonitorThread.Start();
+        }
+
+        void StopGcMonitor()
+        {
+            _gcMonitorRunning = false;
+            if (_gcMonitorThread != null)
+            {
+                _gcMonitorThread.Join(500);
+                _gcMonitorThread = null;
+            }
+        }
+
         void CleanupStreaming()
         {
             TraceUploader.FlushNow();
+            StopGcMonitor();
             if (_rttProbe != null)
             {
                 _rttProbe.Stop();
@@ -391,7 +437,9 @@ namespace VideoStream
         void HandleFrameEncoded(EncodedFrame frame)
         {
             var encodedCount = Interlocked.Increment(ref _encodedFrameLogCount);
-            if (encodedCount <= 5 || encodedCount % 60 == 0)
+            // Log cadence 1s->10s (60->600 frames): main-thread Debug.Log + logcat
+            // writes were contributing to periodic 60->55fps dips.
+            if (encodedCount <= 5 || encodedCount % 600 == 0)
             {
                 Debug.Log("[VideoStream] Encoded frame count=" + encodedCount +
                           " key=" + frame.IsKeyFrame +

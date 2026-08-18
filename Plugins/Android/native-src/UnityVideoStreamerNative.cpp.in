@@ -220,7 +220,10 @@ static void EnsureSwapThreadStarted()
             else
             {
                 g_renderedFrames++;
-                if (g_renderedFrames <= 5 || g_renderedFrames % 60 == 0)
+                // Log cadence 1s->10s (60->600 frames): logcat writes on the
+                // render path were blocking the GL thread periodically, showing
+                // as 60->55fps dips on the Unity FPS display.
+                if (g_renderedFrames <= 5 || g_renderedFrames % 600 == 0)
                 {
                     LOGI("Rendered frame %d (%dx%d flip=%d swap=%.2fms)",
                          g_renderedFrames,
@@ -502,7 +505,9 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
     }
     g_swapCv.notify_one();
 
-    if (g_renderedFrames <= 5 || g_renderedFrames % 60 == 0)
+    // Render-thread log every 600 frames (~10s) instead of 60 (~1s): logcat
+    // writes on the GL thread caused periodic 60->55fps dips on the FPS display.
+    if (g_renderedFrames <= 5 || g_renderedFrames % 600 == 0)
     {
         LOGI("Render timing make=%.2fms blit=%.2fms swap=%.2fms restore=%.2fms total=%.2fms",
              tBlit0 - tMakeCurrent0,
