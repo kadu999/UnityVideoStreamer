@@ -12,9 +12,7 @@ namespace VideoStream
 
         string _mime = "video/avc";
         int _frameId;
-        int _sequence;
         volatile bool _running;
-        long _encoderStartNs;
 
         public event Action<EncodedFrame> FrameEncoded;
         public event Action<string> Error;
@@ -50,9 +48,11 @@ namespace VideoStream
 
                 _mime = config.MimeType;
                 _running = true;
-                _encoderStartNs = NowNs(); // MediaCodec surface PTS starts ~here (us from 0)
+                // Native direct send: let the codec loop push frames straight to
+                // UDP once targets are set (C4/native-send).
+                VideoStreamNative.VSMedia_CodecSetUdpReady(1);
                 VideoStreamNative.SetActive(1);
-                Debug.Log($"[VideoStream] Native encoder started: {config.Width}x{config.Height} {config.FrameRate}fps {config.MimeType}");
+                Debug.Log($"[VideoStream] Native encoder started: {config.Width}x{config.Height} {config.FrameRate}fps {config.MimeType} native-send=on");
                 return true;
             }
         }
@@ -74,34 +74,25 @@ namespace VideoStream
                 bool isConfig;
                 bool isKeyFrame;
                 long ptsUs;
+                float encodeMs;
                 if (VideoStreamNative.VSMedia_CodecDequeueFrame(
                         _frameBuffer,
                         _frameBuffer.Length,
                         out size,
                         out isConfig,
                         out isKeyFrame,
-                        out ptsUs) != 1)
+                        out ptsUs,
+                        out encodeMs) != 1)
                 {
                     break;
                 }
 
-                // Encode latency = output time - input time. MediaCodec surface PTS is
-                // a small us counter starting at encoder start, so map it onto the same
-                // Stopwatch clock: inputNs = encoderStartNs + ptsUs*1000.
-                var outputNs = NowNs();
-                var inputNs = _encoderStartNs + ptsUs * 1000L;
-                var encodeMs = (outputNs - inputNs) / 1e6f;
+                // A3: encode latency now comes from the native side (same plugin clock,
+                // measured at dequeue time) — no C# poll-cadence noise in enc_ms.
                 var data = new byte[size];
                 Buffer.BlockCopy(_frameBuffer, 0, data, 0, size);
                 FrameEncoded?.Invoke(new EncodedFrame(data, isConfig, isKeyFrame, _mime, ptsUs, encodeMs));
             }
-        }
-
-        static long NowNs()
-        {
-            // Monotonic high-res clock; double avoids long overflow, ms-grade precision is enough.
-            return (long)((double)System.Diagnostics.Stopwatch.GetTimestamp() * 1_000_000_000.0
-                / System.Diagnostics.Stopwatch.Frequency);
         }
 
         public void RequestKeyFrame()
@@ -117,9 +108,9 @@ namespace VideoStream
             }
 
             var frameId = Interlocked.Increment(ref _frameId) - 1;
-            var sequence = (uint)Interlocked.Increment(ref _sequence);
-            // PIPETRACE: check sampling BEFORE building strings so the frame path
-            // does zero string work when the frame is not traced.
+            // Native direct send (C4/native-send): the codec loop already pushed
+            // this frame to UDP at dequeue time; this method only keeps the trace
+            // (sampled) alive. The wire frameId/sequence now live in native code.
             if (!frame.IsConfig && TraceUploader.ShouldTraceFrame(frameId))
             {
                 TraceUploader.TraceFrame(
@@ -129,15 +120,6 @@ namespace VideoStream
                     $"ev=SEND frame={frameId} bytes={frame.Data.Length} dgrams={TraceUploader.FragmentCount(frame.Data.Length)}",
                     frameId);
             }
-            VideoStreamNative.VSMedia_UdpSendFrame(
-                frameId,
-                frame.PtsUs,
-                frame.Data,
-                frame.Data.Length,
-                frame.IsConfig,
-                frame.IsKeyFrame,
-                frame.MimeType,
-                sequence);
         }
 
         public bool TakeIdrRequest()
@@ -151,6 +133,7 @@ namespace VideoStream
             {
                 if (!_running) return;
                 _running = false;
+                VideoStreamNative.VSMedia_CodecSetUdpReady(0);
                 VideoStreamNative.SetActive(0);
                 VideoStreamNative.VSMedia_CodecStop();
                 VideoStreamNative.VSMedia_UdpStop();

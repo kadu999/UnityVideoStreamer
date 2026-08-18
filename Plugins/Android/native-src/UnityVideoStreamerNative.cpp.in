@@ -485,6 +485,9 @@ static void UNITY_INTERFACE_API RenderEvent(int eventId)
             g_eglSurface,
             static_cast<EGLnsecsANDROID>((NowMs() - g_startMs) * 1000000.0));
     }
+    // NOTE: B1 tested EGL fence (glFlush + eglWaitSyncKHR) instead of glFinish;
+    // swap then blocked ~10ms on a full BufferQueue (p95 27->57ms), so glFinish
+    // stays: it acts as producer pacing for the codec input queue.
     glFinish();
 
     if (!eglMakeCurrent(unityDisplay, unityDraw, unityRead, unityContext))
@@ -562,6 +565,12 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CameraSetSurfaceTexture(void* surf
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CameraGetExternalTexture()
 {
     return static_cast<int>(g_cameraTextureId.load());
+}
+
+// A3: expose the PTS epoch so the codec loop can compute native-side encode latency.
+extern "C" UNITY_INTERFACE_EXPORT double VSMedia_GetStartMs()
+{
+    return g_startMs;
 }
 
 extern "C" UNITY_INTERFACE_EXPORT JavaVM* VSMedia_GetJavaVm()

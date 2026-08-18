@@ -76,7 +76,11 @@ namespace VideoStream
             out int size,
             [MarshalAs(UnmanagedType.I1)] out bool isConfig,
             [MarshalAs(UnmanagedType.I1)] out bool isKeyFrame,
-            out long ptsUs);
+            out long ptsUs,
+            out float encodeMs);
+
+        [DllImport(Library)]
+        internal static extern void VSMedia_CodecSetUdpReady(int ready);
 
         [DllImport(Library)]
         internal static extern void VSMedia_CodecRequestKeyFrame();

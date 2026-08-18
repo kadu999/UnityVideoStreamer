@@ -24,6 +24,17 @@
 #define COLOR_FormatSurface 0x7F000789
 #endif
 
+// PTS epoch (ms) maintained by the EGL render plugin; the codec input PTS is set
+// via eglPresentationTimeANDROID against this same clock, so native-side encode
+// latency can be computed entirely inside the plugin clock (A3).
+extern "C" double VSMedia_GetStartMs();
+
+// Native direct send (C4/native-send): the codec loop pushes encoded frames
+// straight into the UDP send queue, bypassing the C# poll round-trip.
+extern "C" int VSMedia_UdpSendFrame(
+    int frameId, int64_t ptsUs, const uint8_t* data, int size,
+    bool isConfig, bool isKeyFrame, const char* mime, uint32_t sequence);
+
 namespace
 {
     constexpr uint8_t kStartCode4[] = {0, 0, 0, 1};
@@ -33,7 +44,14 @@ namespace
         bool isConfig = false;
         bool isKeyFrame = false;
         int64_t ptsUs = 0;
+        float encodeMs = 0.0f;
     };
+
+    double NowMs()
+    {
+        return std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+    }
 
     AMediaCodec* gCodec = nullptr;
     ANativeWindow* gInputWindow = nullptr;
@@ -44,6 +62,10 @@ namespace
     std::atomic<bool> gCodecRunning{false};
     std::string gMime;
     std::vector<uint8_t> gCsd;
+    // Native direct send state (C4/native-send).
+    std::atomic<bool> g_udpReady{false};
+    int s_frameId = 0;
+    uint32_t s_sequence = 0;
 
     bool HasStartCode(const std::vector<uint8_t>& data)
     {
@@ -214,6 +236,7 @@ namespace
             AMediaCodecBufferInfo info{};
             // 10ms poll: kept at the platform default; shorter timeouts only spin
             // the background thread without reducing main-thread poll cost.
+            // (A2 tested 1ms -> ENC 59.5/61.6 vs baseline 55.9/64.5, no net gain, reverted)
             ssize_t index = AMediaCodec_dequeueOutputBuffer(gCodec, &info, 10000);
             if (index < 0)
             {
@@ -233,6 +256,11 @@ namespace
                 frame.isConfig = (info.flags & AMEDIACODEC_BUFFER_FLAG_CODEC_CONFIG) != 0;
                 frame.isKeyFrame = (info.flags & 1) != 0;
                 frame.ptsUs = info.presentationTimeUs;
+                // A3: encode latency measured entirely in the plugin clock.
+                // input time = PTS epoch + ptsUs (the EGL plugin stamps PTS against
+                // g_startMs), output time = dequeue stamp -> no C# poll cadence noise.
+                frame.encodeMs = static_cast<float>(
+                    NowMs() - (VSMedia_GetStartMs() + frame.ptsUs / 1000.0));
 
                 frame.data = EnsureAnnexB(buffer + info.offset, info.size);
                 if (frame.data.empty())
@@ -255,6 +283,23 @@ namespace
                     {
                         frame.data = Concat(gCsd, frame.data);
                     }
+                }
+
+                // Native direct send (C4/native-send): push to the UDP queue at
+                // dequeue time, skipping the C# poll round-trip (saves up to
+                // ~16.7ms per frame). Guarded by g_udpReady so the config frame
+                // is not dropped before UDP targets exist.
+                if (g_udpReady.load())
+                {
+                    VSMedia_UdpSendFrame(
+                        s_frameId++,
+                        frame.ptsUs,
+                        frame.data.data(),
+                        static_cast<int>(frame.data.size()),
+                        frame.isConfig,
+                        frame.isKeyFrame,
+                        gMime.c_str(),
+                        ++s_sequence);
                 }
 
                 if (++logCount <= 5 || logCount % 60 == 0)
@@ -304,7 +349,7 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CodecStart(
     AMediaFormat_setInt32(format, AMEDIAFORMAT_KEY_I_FRAME_INTERVAL, iFrameIntervalSeconds);
     AMediaFormat_setInt32(format, "low-latency", 1);
     AMediaFormat_setInt32(format, "operating-rate", frameRate * 3);
-    AMediaFormat_setInt32(format, "priority", 0);
+    AMediaFormat_setInt32(format, "priority", 0); // NOTE: priority=1 (realtime) tested 2026-08-18 -> ENC 55.9->72.5ms, reverted
     AMediaFormat_setInt32(format, "latency", 0);
     AMediaFormat_setInt32(format, "bitrate-mode", 2);
     AMediaFormat_setInt32(format, "max-b-frames", 0);
@@ -354,9 +399,22 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CodecStart(
     gInputWindow = inputWindow;
     gMime = mime != nullptr ? mime : "video/avc";
     gCsd.clear();
+    s_frameId = 0;
+    s_sequence = 0;
+    g_udpReady.store(false);
     gCodecRunning.store(true);
-    gCodecThread = std::thread(CodecLoop);
+    // CodecLoop thread is started by VSMedia_CodecSetUdpReady(1) so no frame
+    // (including the config buffer) is dequeued before UDP targets exist.
     return 1;
+}
+
+extern "C" UNITY_INTERFACE_EXPORT void VSMedia_CodecSetUdpReady(int ready)
+{
+    bool was = g_udpReady.exchange(ready != 0);
+    if (ready && !was && gCodecRunning.load() && !gCodecThread.joinable())
+    {
+        gCodecThread = std::thread(CodecLoop);
+    }
 }
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CodecStop()
@@ -390,6 +448,7 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CodecStop()
     }
     gCsd.clear();
     gMime.clear();
+    g_udpReady.store(false);
     return 1;
 }
 
@@ -404,7 +463,8 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CodecDequeueFrame(
     int* size,
     bool* isConfig,
     bool* isKeyFrame,
-    int64_t* ptsUs)
+    int64_t* ptsUs,
+    float* encodeMs)
 {
     EncodedFrame frame;
     {
@@ -427,6 +487,7 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_CodecDequeueFrame(
     if (isConfig != nullptr) *isConfig = frame.isConfig;
     if (isKeyFrame != nullptr) *isKeyFrame = frame.isKeyFrame;
     if (ptsUs != nullptr) *ptsUs = frame.ptsUs;
+    if (encodeMs != nullptr) *encodeMs = frame.encodeMs;
     return 1;
 }
 
