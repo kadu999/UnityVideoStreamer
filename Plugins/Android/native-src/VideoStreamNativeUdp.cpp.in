@@ -207,6 +207,19 @@ namespace
         int payloadSize = length - kUdpFragmentHeaderSize;
         if (count <= 0 || index >= count || payloadSize <= 0)
         {
+            // 裸 FrameProtocol 包（无分片头）：gateway 的 IDR 请求(0x0040)和
+            // disconnect(0x0080) 以 18 字节原包发出，bytes 4-5 是 ptsUs 高位=0，
+            // 会被误读成 count=0 而在此被丢弃——IDR 请求从未到达编码器，
+            // 丢帧后只能等 2s 周期关键帧恢复。0x0040 只计数，不喂给解码器。
+            if (length >= kFrameHeaderSize)
+            {
+                uint32_t rawFlags = (static_cast<uint32_t>(data[16]) << 8) |
+                                    static_cast<uint32_t>(data[17]);
+                if ((rawFlags & kFlagIdrRequest) != 0)
+                {
+                    gIdrRequestCount.fetch_add(1);
+                }
+            }
             return;
         }
 
@@ -236,6 +249,25 @@ namespace
         buffer.fragments[index] = std::move(payload);
         buffer.received++;
         buffer.lastUpdateMs = NowMs();
+
+        // 超时清理：丢分片会导致该 sequence 的缓冲永远等不全（旧实现无清理，
+        // 长时间有损链路下内存持续增长）。与 gateway 的 Reassembler 一致：超过
+        // 64 个在途缓冲时清掉 300ms 未更新的。
+        if (gFragmentBuffers.size() > 64)
+        {
+            const int64_t now = NowMs();
+            for (auto it = gFragmentBuffers.begin(); it != gFragmentBuffers.end();)
+            {
+                if (now - it->second.lastUpdateMs > 300)
+                {
+                    it = gFragmentBuffers.erase(it);
+                }
+                else
+                {
+                    ++it;
+                }
+            }
+        }
 
         if (buffer.received != count)
         {
@@ -590,6 +622,42 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpTakeIdrRequest()
 
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpSendIdrRequest()
 {
+    std::lock_guard<std::mutex> lock(gUdpMutex);
+    if (gUdpSocket < 0)
+    {
+        return 0;
+    }
+
+    std::vector<uint8_t> packet(static_cast<size_t>(kFrameHeaderSize));
+    WriteU32(packet.data(), 0);
+    WriteU64(packet.data() + 4, 0);
+    WriteU32(packet.data() + 12, 0);
+    WriteU16(packet.data() + 16, kFlagIdrRequest);
+
+    int sent = 0;
+    // 优先发给配置的目标（gateway:9999 的 FrameReceiver 端口）：摄像头帧来自
+    // gateway 的临时上游 socket（随机端口，只发不收），旧实现回给 last-sender
+    // 的 IDR 请求实际落在收不到数据的端口上，等于丢失。目标列表为空时回退
+    // last-sender（保持原有行为）。
+    if (!gUdpTargets.empty())
+    {
+        for (const auto& target : gUdpTargets)
+        {
+            ssize_t result = sendto(
+                gUdpSocket,
+                packet.data(),
+                packet.size(),
+                0,
+                reinterpret_cast<const sockaddr*>(&target),
+                sizeof(target));
+            if (result == static_cast<ssize_t>(packet.size()))
+            {
+                ++sent;
+            }
+        }
+        return sent > 0 ? 1 : 0;
+    }
+
     uint32_t ip = gLastSenderIp.load();
     uint16_t port = gLastSenderPort.load();
     if (ip == 0 || port == 0)
@@ -601,18 +669,6 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpSendIdrRequest()
     target.sin_family = AF_INET;
     target.sin_addr.s_addr = htonl(ip);
     target.sin_port = htons(port);
-
-    std::vector<uint8_t> packet(static_cast<size_t>(kFrameHeaderSize));
-    WriteU32(packet.data(), 0);
-    WriteU64(packet.data() + 4, 0);
-    WriteU32(packet.data() + 12, 0);
-    WriteU16(packet.data() + 16, kFlagIdrRequest);
-
-    std::lock_guard<std::mutex> lock(gUdpMutex);
-    if (gUdpSocket < 0)
-    {
-        return 0;
-    }
 
     ssize_t result = sendto(
         gUdpSocket,
