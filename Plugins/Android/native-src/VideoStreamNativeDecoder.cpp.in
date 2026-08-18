@@ -395,6 +395,12 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderFeedPacket(
 
     if ((flags & kFlagConfig) != 0)
     {
+        // 新流开始（摄像头重启/gateway 重启/新会话）：重置丢帧状态和帧号基线。
+        // 否则新流的 frameId 从 0 重新计数，一旦超过旧的 gLastFrameId 就被
+        // 误判成"丢失 N 帧"进入 gDamaged，重启后最多 2s 内一直丢帧等 IDR。
+        gLastFrameId = -1;
+        gDamaged = false;
+        gLastIdrRequestMs = 0;
         gCsd.assign(payload, payload + payloadSize);
         return ConfigureDecoder() ? 1 : 0;
     }
