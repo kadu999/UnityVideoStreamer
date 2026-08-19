@@ -103,7 +103,8 @@ namespace VideoStream
         void ReceiveLoop()
         {
             // 复用接收缓冲：UdpClient.Receive(ref ep) 每次调用都 new 一个 8KB
-            // 数组（2Hz 探针 = 持续分配，是 GC 抖动来源之一）。改用带缓冲的重载。
+            // 数组（2Hz 探针 = 持续分配，是 GC 抖动来源之一）。直接用底层
+            // Socket.Receive(byte[]) 填现有缓冲（返回实际字节数，不分配）。
             var buffer = new byte[HeaderSize + ProbePayloadSize + 64];
             while (_running)
             {
@@ -113,8 +114,7 @@ namespace VideoStream
                     lock (_lock) { client = _client; }
                     if (client == null) break;
 
-                    var ep = new IPEndPoint(IPAddress.Any, 0);
-                    var received = client.Receive(buffer, ref ep);
+                    var received = client.Client.Receive(buffer);
                     if (received < HeaderSize + ProbePayloadSize) continue;
 
                     var id = ReadInt32(buffer, HeaderSize);
