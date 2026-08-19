@@ -620,6 +620,13 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpTakeIdrRequest()
     return gIdrRequestCount.exchange(0);
 }
 
+// 摄像头接收节奏测量：gUdpReceivedFrames 是收到并重装完成的 FrameProtocol 帧数
+//（不含控制包）。C# 侧每秒取差值即可得 fed fps。
+extern "C" UNITY_INTERFACE_EXPORT uint64_t VSMedia_UdpGetReceivedFrames()
+{
+    return gUdpReceivedFrames.load();
+}
+
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_UdpSendIdrRequest()
 {
     std::lock_guard<std::mutex> lock(gUdpMutex);

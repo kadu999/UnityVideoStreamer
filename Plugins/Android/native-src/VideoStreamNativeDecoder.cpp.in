@@ -591,6 +591,17 @@ extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderGetOutputHeight()
     return gOutputHeight.load();
 }
 
+// 解码节奏测量：fed = 喂给解码器的帧数, output = 解码输出到 Surface 的帧数。
+extern "C" UNITY_INTERFACE_EXPORT uint64_t VSMedia_DecoderGetFedFrames()
+{
+    return gDecoderFedFrames.load();
+}
+
+extern "C" UNITY_INTERFACE_EXPORT uint64_t VSMedia_DecoderGetOutputFrames()
+{
+    return gDecoderOutputFrames.load();
+}
+
 extern "C" UNITY_INTERFACE_EXPORT int VSMedia_DecoderSetOutputSurface(void* surface)
 {
     std::lock_guard<std::mutex> lock(gDecoderMutex);

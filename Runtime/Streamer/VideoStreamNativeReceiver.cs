@@ -134,6 +134,24 @@ namespace VideoStream
         {
             get { return decodeEnabled ? VideoStreamNative.VSMedia_DecoderGetOutputHeight() : 0; }
         }
+
+        /// <summary>收到并重装完成的 FrameProtocol 帧数（摄像头回传节奏测量）。</summary>
+        public long ReceivedFrameCount
+        {
+            get { return (long)VideoStreamNative.VSMedia_UdpGetReceivedFrames(); }
+        }
+
+        /// <summary>喂给解码器的帧数。</summary>
+        public long DecoderFedFrameCount
+        {
+            get { return (long)VideoStreamNative.VSMedia_DecoderGetFedFrames(); }
+        }
+
+        /// <summary>解码输出到 Surface 的帧数。</summary>
+        public long DecodedFrameCount
+        {
+            get { return (long)VideoStreamNative.VSMedia_DecoderGetOutputFrames(); }
+        }
     }
 }
 #endif

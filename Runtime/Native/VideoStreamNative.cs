@@ -103,6 +103,15 @@ namespace VideoStream
 
         [DllImport(Library)]
         internal static extern int VSMedia_DecoderGetOutputHeight();
+
+        [DllImport(Library)]
+        internal static extern ulong VSMedia_UdpGetReceivedFrames();
+
+        [DllImport(Library)]
+        internal static extern ulong VSMedia_DecoderGetFedFrames();
+
+        [DllImport(Library)]
+        internal static extern ulong VSMedia_DecoderGetOutputFrames();
     }
 }
 #endif
